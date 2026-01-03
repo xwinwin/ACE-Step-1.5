@@ -225,9 +225,17 @@ Layout: Two rows with 2 components each.
 
 | Component | Type | Description |
 |-----------|------|-------------|
-| `reference_audio` | Audio (filepath) | Reference audio file for style guidance (optional for generate task, required for others) |
+| `reference_audio` | Audio (filepath) | Reference audio file for style guidance (optional) |
 
-#### 2.3.5 Repaint Parameters Group (Dynamic)
+#### 2.3.5 Source Audio Group (Dynamic)
+
+**Visible for:** repaint, cover, add, complete, extract
+
+| Component | Type | Description |
+|-----------|------|-------------|
+| `source_audio` | Audio (filepath) | Source audio file to be processed (required for non-generate tasks) |
+
+#### 2.3.6 Repaint Parameters Group (Dynamic)
 
 **Visible for:** repaint
 
@@ -236,7 +244,7 @@ Layout: Two rows with 2 components each.
 | `repainting_start` | Number | 0.0 | Start time in seconds |
 | `repainting_end` | Number | 10.0 | End time in seconds |
 
-#### 2.3.6 Cover Parameters Group (Dynamic)
+#### 2.3.7 Cover Parameters Group (Dynamic)
 
 **Visible for:** cover
 
@@ -244,7 +252,7 @@ Layout: Two rows with 2 components each.
 |-----------|------|-------|---------|
 | `audio_cover_strength` | Slider | 0.0 - 1.0 | 1.0 |
 
-#### 2.3.7 Track Parameters Group (Dynamic)
+#### 2.3.8 Track Parameters Group (Dynamic)
 
 **Visible for:** add, complete
 
@@ -252,7 +260,7 @@ Layout: Two rows with 2 components each.
 |-----------|------|---------|---------|
 | `track_type` | Dropdown | `["vocal", "bass", "drums", "guitar", "piano", "other"]` | `"vocal"` |
 
-#### 2.3.8 Advanced Settings Accordion (Collapsed by Default)
+#### 2.3.9 Advanced Settings Accordion (Collapsed by Default)
 
 | Component | Type | Range | Default |
 |-----------|------|-------|---------|
@@ -324,36 +332,42 @@ handler.generate_audio(
 TASK_VISIBILITY = {
     "generate": {
         "reference_audio": True,
+        "source_audio": False,
         "repaint_params": False,
         "cover_params": False,
         "track_params": False,
     },
     "repaint": {
         "reference_audio": True,
+        "source_audio": True,
         "repaint_params": True,
         "cover_params": False,
         "track_params": False,
     },
     "cover": {
         "reference_audio": True,
+        "source_audio": True,
         "repaint_params": False,
         "cover_params": True,
         "track_params": False,
     },
     "add": {
         "reference_audio": True,
+        "source_audio": True,
         "repaint_params": False,
         "cover_params": False,
         "track_params": True,
     },
     "complete": {
         "reference_audio": True,
+        "source_audio": True,
         "repaint_params": False,
         "cover_params": False,
         "track_params": True,
     },
     "extract": {
         "reference_audio": True,
+        "source_audio": True,
         "repaint_params": False,
         "cover_params": False,
         "track_params": False,
@@ -369,6 +383,7 @@ def update_task_visibility(task: str):
     vis = TASK_VISIBILITY.get(task, TASK_VISIBILITY["generate"])
     return (
         gr.update(visible=vis["reference_audio"]),
+        gr.update(visible=vis["source_audio"]),
         gr.update(visible=vis["repaint_params"]),
         gr.update(visible=vis["cover_params"]),
         gr.update(visible=vis["track_params"]),
@@ -439,6 +454,8 @@ gr.Blocks(title="ACE-Step Playground", theme=gr.themes.Soft())
         │       └── gr.Column(scale=1)
         │           ├── gr.Group("#### Reference Audio")
         │           │   └── reference_audio
+        │           ├── gr.Group("#### Source Audio", visible=dynamic)
+        │           │   └── source_audio
         │           ├── gr.Group("#### Repaint Parameters", visible=dynamic)
         │           │   └── gr.Row [repainting_start, repainting_end]
         │           ├── gr.Group("#### Cover Parameters", visible=dynamic)

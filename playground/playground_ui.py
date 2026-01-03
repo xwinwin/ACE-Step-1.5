@@ -21,36 +21,42 @@ if project_root not in sys.path:
 TASK_VISIBILITY = {
     "generate": {
         "reference_audio": True,
+        "source_audio": False,
         "repaint_params": False,
         "cover_params": False,
         "track_params": False,
     },
     "repaint": {
         "reference_audio": True,
+        "source_audio": True,
         "repaint_params": True,
         "cover_params": False,
         "track_params": False,
     },
     "cover": {
         "reference_audio": True,
+        "source_audio": True,
         "repaint_params": False,
         "cover_params": True,
         "track_params": False,
     },
     "add": {
         "reference_audio": True,
+        "source_audio": True,
         "repaint_params": False,
         "cover_params": False,
         "track_params": True,
     },
     "complete": {
         "reference_audio": True,
+        "source_audio": True,
         "repaint_params": False,
         "cover_params": False,
         "track_params": True,
     },
     "extract": {
         "reference_audio": True,
+        "source_audio": True,
         "repaint_params": False,
         "cover_params": False,
         "track_params": False,
@@ -63,6 +69,7 @@ def update_task_visibility(task: str):
     vis = TASK_VISIBILITY.get(task, TASK_VISIBILITY["generate"])
     return (
         gr.update(visible=vis["reference_audio"]),
+        gr.update(visible=vis["source_audio"]),
         gr.update(visible=vis["repaint_params"]),
         gr.update(visible=vis["cover_params"]),
         gr.update(visible=vis["track_params"]),
@@ -380,7 +387,15 @@ def create_ui(handler):
                             with gr.Group(visible=True) as reference_audio_group:
                                 gr.Markdown("#### Reference Audio")
                                 reference_audio = gr.Audio(
-                                    label="Reference Audio",
+                                    label="Reference Audio (for style guidance)",
+                                    type="filepath"
+                                )
+                            
+                            # Source Audio Group (for repaint, cover, add, complete, extract)
+                            with gr.Group(visible=False) as source_audio_group:
+                                gr.Markdown("#### Source Audio")
+                                source_audio = gr.Audio(
+                                    label="Source Audio (to be processed)",
                                     type="filepath"
                                 )
                             
@@ -552,6 +567,7 @@ def create_ui(handler):
             inputs=[task_type],
             outputs=[
                 reference_audio_group,
+                source_audio_group,
                 repaint_params_group,
                 cover_params_group,
                 track_params_group,
@@ -561,7 +577,7 @@ def create_ui(handler):
         def generate_audio_wrapper(
             task, caption, lyrics, codes,
             steps, guidance, seed_val, random_seed,
-            ref_audio, repaint_start, repaint_end, cover_strength,
+            ref_audio, src_audio, repaint_start, repaint_end, cover_strength,
             track_type_val,
             bpm_val, key_val, time_sig_val, vocal_lang,
             adg, cfg_start, cfg_end, fmt, tiled,
@@ -580,6 +596,7 @@ def create_ui(handler):
                 guidance_scale=guidance,
                 seed=actual_seed,
                 reference_audio_path=ref_audio,
+                source_audio_path=src_audio,
                 repainting_start=repaint_start,
                 repainting_end=repaint_end,
                 audio_cover_strength=cover_strength,
@@ -601,7 +618,7 @@ def create_ui(handler):
             inputs=[
                 task_type, ace_caption, ace_lyrics, ace_audio_codes,
                 inference_steps, guidance_scale, seed, use_random_seed,
-                reference_audio, repainting_start, repainting_end, audio_cover_strength,
+                reference_audio, source_audio, repainting_start, repainting_end, audio_cover_strength,
                 track_type,
                 ace_bpm, ace_key_scale, ace_time_signature, vocal_language,
                 use_adg, cfg_interval_start, cfg_interval_end, audio_format, use_tiled_decode

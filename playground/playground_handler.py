@@ -233,8 +233,10 @@ class PlaygroundHandler:
         inference_steps: int,
         guidance_scale: float,
         seed: int,
-        # Reference audio
+        # Reference audio (for style guidance)
         reference_audio_path: Optional[str],
+        # Source audio (for repaint, cover, add, complete, extract tasks)
+        source_audio_path: Optional[str],
         # Repaint parameters
         repainting_start: float,
         repainting_end: float,
@@ -302,7 +304,7 @@ class PlaygroundHandler:
                 reference_audio=reference_audio_path,  # Reference audio for style
                 audio_duration=-1,  # Use default or derive from src_audio
                 batch_size=1,
-                src_audio=reference_audio_path if internal_task in ["repaint", "cover", "lego", "complete", "extract"] else None,
+                src_audio=source_audio_path if internal_task in ["repaint", "cover", "lego", "complete", "extract"] else None,
                 audio_code_string=audio_codes,
                 repainting_start=repainting_start,
                 repainting_end=repainting_end,
