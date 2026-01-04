@@ -4,7 +4,6 @@ Gradio-based UI for the ACE-Step Playground.
 """
 import os
 import sys
-import tempfile
 import gradio as gr
 from typing import Optional, List
 
@@ -14,16 +13,13 @@ project_root = os.path.dirname(os.path.dirname(current_file))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# Import Studio client (use relative import to avoid circular import)
-from studio_client import (
-    get_studio_client,
-    init_studio_client,
-    check_studio_connection,
+# Import Studio Bridge JavaScript code (for frontend API calls)
+from studio_bridge import (
+    STUDIO_BRIDGE_JS,
+    JS_CONNECT_STUDIO,
+    JS_GET_AUDIO_FROM_STUDIO,
+    JS_SEND_AUDIO_TO_STUDIO,
 )
-
-# Temp directory for Studio audio files
-STUDIO_TEMP_DIR = os.path.join(tempfile.gettempdir(), "acestep_studio")
-os.makedirs(STUDIO_TEMP_DIR, exist_ok=True)
 
 
 # =============================================================================
@@ -104,7 +100,11 @@ def create_ui(handler):
     available_llm_models = handler.get_available_llm_models()
     available_dit_models = handler.get_available_dit_models()
     
-    with gr.Blocks(title="ACE-Step Playground", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(
+        title="ACE-Step Playground",
+        theme=gr.themes.Soft(),
+        js=STUDIO_BRIDGE_JS  # Inject Studio Bridge JS into the page
+    ) as demo:
         gr.Markdown("# 🎵 ACE-Step Playground")
         gr.Markdown("Generate music using LLM for audio codes and DiT for audio synthesis.")
         
@@ -682,81 +682,48 @@ def create_ui(handler):
         )
         
         # -----------------------------------------------------------------
-        # Studio Integration Events
+        # Studio Integration Events (Frontend JavaScript)
         # -----------------------------------------------------------------
+        # Note: These handlers use the js= parameter to execute in the browser
+        # because Studio runs on the user's localhost and is not accessible
+        # from the server-side Python code.
         
-        def connect_to_studio(token: str):
-            """Connect to ACE Studio with the provided token."""
-            if not token or not token.strip():
-                return "❌ Please enter a token"
-            success, message = init_studio_client(token.strip())
-            return message
-        
-        def get_audio_from_studio():
-            """Get audio from Studio clipboard."""
-            client = get_studio_client()
-            if not client.token:
-                return None, "❌ Not connected to Studio. Please connect first."
-            
-            try:
-                file_path, message = client.receive_audio_from_studio(output_dir=STUDIO_TEMP_DIR)
-                return file_path, message
-            except Exception as e:
-                return None, f"❌ Error: {str(e)}"
-        
-        def send_audio_to_studio(audio_path: str):
-            """Send audio to Studio clipboard."""
-            if not audio_path:
-                return "❌ No audio to send"
-            
-            client = get_studio_client()
-            if not client.token:
-                return "❌ Not connected to Studio. Please connect first."
-            
-            try:
-                # For local files, we need to use file:// URL or the Gradio served URL
-                # Since Studio expects an HTTP URL, this may need a local server
-                # For now, we'll attempt with the file path directly
-                success, message = client.send_audio_to_studio(
-                    audio_url=audio_path,
-                    filename=os.path.basename(audio_path) if audio_path else None,
-                    wait=True
-                )
-                return message
-            except Exception as e:
-                return f"❌ Error: {str(e)}"
-        
-        # Connect button
+        # Connect button - uses frontend JS
         connect_studio_btn.click(
-            fn=connect_to_studio,
+            fn=lambda x: x,  # Pass-through function (JS handles the logic)
             inputs=[studio_token],
-            outputs=[studio_connection_status]
+            outputs=[studio_connection_status],
+            js=JS_CONNECT_STUDIO
         )
         
-        # Get from Studio buttons
+        # Get from Studio buttons - uses frontend JS
         get_ref_from_studio_btn.click(
-            fn=get_audio_from_studio,
+            fn=lambda: (None, ""),  # Placeholder (JS handles the logic)
             inputs=[],
-            outputs=[reference_audio, studio_connection_status]
+            outputs=[reference_audio, studio_connection_status],
+            js=JS_GET_AUDIO_FROM_STUDIO
         )
         
         get_src_from_studio_btn.click(
-            fn=get_audio_from_studio,
+            fn=lambda: (None, ""),  # Placeholder (JS handles the logic)
             inputs=[],
-            outputs=[source_audio, studio_connection_status]
+            outputs=[source_audio, studio_connection_status],
+            js=JS_GET_AUDIO_FROM_STUDIO
         )
         
-        # Send to Studio buttons
+        # Send to Studio buttons - uses frontend JS
         send_audio1_to_studio_btn.click(
-            fn=send_audio_to_studio,
+            fn=lambda x: "",  # Placeholder (JS handles the logic)
             inputs=[audio_output_1],
-            outputs=[studio_connection_status]
+            outputs=[studio_connection_status],
+            js=JS_SEND_AUDIO_TO_STUDIO
         )
         
         send_audio2_to_studio_btn.click(
-            fn=send_audio_to_studio,
+            fn=lambda x: "",  # Placeholder (JS handles the logic)
             inputs=[audio_output_2],
-            outputs=[studio_connection_status]
+            outputs=[studio_connection_status],
+            js=JS_SEND_AUDIO_TO_STUDIO
         )
     
     return demo

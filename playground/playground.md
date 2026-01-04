@@ -629,12 +629,14 @@ The Playground integrates with ACE Studio via the WebBridge REST API for audio e
 2. **Receive Audio**: Click "📥 Get from Studio" to import clipboard audio
 3. **Send Audio**: Click "📤 Send to Studio" to export generated audio
 
-### 9.4 Files
+### 9.4 Implementation
 
-| File | Description |
-|------|-------------|
-| `studio_client.py` | Python client for WebBridge API |
-| `studio_api.md` | API documentation |
+Studio integration uses **frontend JavaScript** (not Python) because:
+- Studio WebBridge runs on user's local machine (`localhost:21573`)
+- Server-side Python cannot access the user's localhost
+- Frontend JS executes in the user's browser and can reach localhost
+
+The `STUDIO_BRIDGE_JS` code in `playground_ui.py` handles all Studio API calls.
 
 ---
 
@@ -648,7 +650,7 @@ The Playground integrates with ACE Studio via the WebBridge REST API for audio e
 - [x] Add Config/Advanced accordions (collapsed by default)
 - [x] Add `track_type` parameter for add/complete tasks
 - [x] Create `playground.py` entry point
-- [x] Add Studio integration (studio_client.py)
+- [x] Add Studio integration (frontend JavaScript in playground_ui.py)
 - [x] Add Studio UI components (token, connect, send/receive buttons)
 - [ ] Test all task types
 - [ ] Test dynamic UI visibility
