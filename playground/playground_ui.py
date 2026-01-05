@@ -725,12 +725,14 @@ def create_ui(handler):
         
         # Send to Studio buttons - uses frontend JS
         send_audio1_to_studio_btn.click(
+            fn=lambda x: "",  # Placeholder (JS handles the logic)
             inputs=[audio_output_1],
             outputs=[studio_connection_status],
             js=JS_SEND_AUDIO_TO_STUDIO
         )
         
         send_audio2_to_studio_btn.click(
+            fn=lambda x: "",  # Placeholder (JS handles the logic)
             inputs=[audio_output_2],
             outputs=[studio_connection_status],
             js=JS_SEND_AUDIO_TO_STUDIO
