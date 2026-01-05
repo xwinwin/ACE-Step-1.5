@@ -303,7 +303,7 @@ class PlaygroundHandler:
                 seed=seed,
                 reference_audio=reference_audio_path,  # Reference audio for style
                 audio_duration=-1,  # Use default or derive from src_audio
-                batch_size=1,
+                batch_size=2,
                 src_audio=source_audio_path if internal_task in ["repaint", "cover", "lego", "complete", "extract"] else None,
                 audio_code_string=audio_codes,
                 repainting_start=repainting_start,
