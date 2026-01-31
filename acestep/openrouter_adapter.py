@@ -173,6 +173,7 @@ def _parse_messages(messages: List[Any]) -> Tuple[str, str, Optional[str], Optio
     reference_audio_path = None
     system_instruction = None
     has_tags = False
+    temp_files = []  # Track temp files for cleanup
 
     for msg in messages:
         role = msg.role
