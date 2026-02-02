@@ -25,7 +25,13 @@ except ImportError:
     logger.warning("Lightning Fabric not installed. Training will use basic training loop.")
 
 from acestep.training.configs import LoRAConfig, TrainingConfig
-from acestep.training.lora_utils import inject_lora_into_dit, save_lora_weights, check_peft_available
+from acestep.training.lora_utils import (
+    inject_lora_into_dit,
+    save_lora_weights,
+    save_training_checkpoint,
+    load_training_checkpoint,
+    check_peft_available,
+)
 from acestep.training.data_module import PreprocessedDataModule
 
 
@@ -202,15 +208,15 @@ class LoRATrainer:
         self,
         tensor_dir: str,
         training_state: Optional[Dict] = None,
+        resume_from: Optional[str] = None,
     ) -> Generator[Tuple[int, float, str], None, None]:
         """Train LoRA adapters from preprocessed tensor files.
-        
-        This is the recommended training method for best performance.
-        
+
         Args:
             tensor_dir: Directory containing preprocessed .pt files
             training_state: Optional state dict for stopping control
-            
+            resume_from: Path to checkpoint to resume from (e.g., "./lora_output/checkpoints/epoch_5")
+
         Yields:
             Tuples of (step, loss, status_message)
         """
@@ -248,9 +254,9 @@ class LoRATrainer:
                 return
             
             yield 0, 0.0, f"📂 Loaded {len(data_module.train_dataset)} preprocessed samples"
-            
+
             if LIGHTNING_AVAILABLE:
-                yield from self._train_with_fabric(data_module, training_state)
+                yield from self._train_with_fabric(data_module, training_state, resume_from)
             else:
                 yield from self._train_basic(data_module, training_state)
                 
@@ -264,6 +270,7 @@ class LoRATrainer:
         self,
         data_module: PreprocessedDataModule,
         training_state: Optional[Dict],
+        resume_from: Optional[str] = None,
     ) -> Generator[Tuple[int, float, str], None, None]:
         """Train using Lightning Fabric."""
         # Create output directory
@@ -288,7 +295,24 @@ class LoRATrainer:
         self.fabric.launch()
         
         yield 0, 0.0, f"🚀 Starting training (precision: {precision})..."
-        
+
+        # Parse resume_from - will load full state after optimizer/scheduler setup
+        start_epoch = 0
+        start_global_step = 0
+        checkpoint_info = None
+        if resume_from and os.path.exists(resume_from):
+            # Pre-check checkpoint to get epoch info for logging
+            checkpoint_info = load_training_checkpoint(resume_from)
+            if checkpoint_info["adapter_path"]:
+                start_epoch = checkpoint_info["epoch"]
+                start_global_step = checkpoint_info["global_step"]
+                yield 0, 0.0, f"📂 Will resume from epoch {start_epoch}, step {start_global_step}"
+            else:
+                yield 0, 0.0, f"⚠️ Checkpoint not found: {resume_from}, starting fresh"
+                checkpoint_info = None
+        elif resume_from:
+            yield 0, 0.0, f"⚠️ Checkpoint path not found: {resume_from}, starting fresh"
+
         # Get dataloader
         train_loader = data_module.train_dataloader()
         
@@ -338,15 +362,82 @@ class LoRATrainer:
         # Setup with Fabric - only the decoder (which has LoRA)
         self.module.model.decoder, optimizer = self.fabric.setup(self.module.model.decoder, optimizer)
         train_loader = self.fabric.setup_dataloaders(train_loader)
-        
+
+        # Load checkpoint AFTER Fabric setup (to match device/dtype)
+        if checkpoint_info and checkpoint_info["adapter_path"]:
+            yield 0, 0.0, f"📂 Loading checkpoint weights..."
+            try:
+                # Reload checkpoint with optimizer and scheduler
+                checkpoint_info = load_training_checkpoint(
+                    resume_from,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    device=self.module.device,
+                )
+                start_epoch = checkpoint_info["epoch"]
+                start_global_step = checkpoint_info["global_step"]
+
+                # Load adapter weights
+                adapter_path = checkpoint_info["adapter_path"]
+                adapter_weights_path = os.path.join(adapter_path, "adapter_model.safetensors")
+                if not os.path.exists(adapter_weights_path):
+                    adapter_weights_path = os.path.join(adapter_path, "adapter_model.bin")
+
+                if os.path.exists(adapter_weights_path):
+                    from safetensors.torch import load_file
+                    if adapter_weights_path.endswith(".safetensors"):
+                        state_dict = load_file(adapter_weights_path)
+                    else:
+                        state_dict = torch.load(adapter_weights_path, map_location=self.module.device)
+
+                    # Load into the decoder (handle Fabric wrapper)
+                    decoder = self.module.model.decoder
+                    if hasattr(decoder, '_forward_module'):
+                        decoder = decoder._forward_module
+
+                    # Load with strict=False but log mismatched keys
+                    missing, unexpected = [], []
+                    model_keys = set(decoder.state_dict().keys())
+                    for key in state_dict.keys():
+                        if key not in model_keys:
+                            unexpected.append(key)
+                    for key in model_keys:
+                        if 'lora_' in key and key not in state_dict:
+                            missing.append(key)
+
+                    decoder.load_state_dict(state_dict, strict=False)
+
+                    if missing:
+                        logger.warning(f"Missing LoRA keys: {missing[:5]}...")
+                    if unexpected:
+                        logger.warning(f"Unexpected keys: {unexpected[:5]}...")
+
+                    status_parts = [f"✅ Loaded checkpoint: epoch {start_epoch}, step {start_global_step}"]
+                    if checkpoint_info["loaded_optimizer"]:
+                        status_parts.append("optimizer ✓")
+                    if checkpoint_info["loaded_scheduler"]:
+                        status_parts.append("scheduler ✓")
+                    yield 0, 0.0, ", ".join(status_parts)
+                else:
+                    yield 0, 0.0, f"⚠️ Adapter weights not found in {adapter_path}"
+                    start_epoch = 0
+                    start_global_step = 0
+                    checkpoint_info = None
+            except Exception as e:
+                logger.exception("Failed to load checkpoint")
+                yield 0, 0.0, f"⚠️ Failed to load checkpoint: {e}, starting fresh"
+                start_epoch = 0
+                start_global_step = 0
+                checkpoint_info = None
+
         # Training loop
-        global_step = 0
+        global_step = start_global_step
         accumulation_step = 0
         accumulated_loss = 0.0
-        
+
         self.module.model.decoder.train()
-        
-        for epoch in range(self.training_config.max_epochs):
+
+        for epoch in range(start_epoch, self.training_config.max_epochs):
             epoch_loss = 0.0
             num_batches = 0
             epoch_start_time = time.time()
@@ -403,7 +494,14 @@ class LoRATrainer:
             # Save checkpoint
             if (epoch + 1) % self.training_config.save_every_n_epochs == 0:
                 checkpoint_dir = os.path.join(self.training_config.output_dir, "checkpoints", f"epoch_{epoch+1}")
-                save_lora_weights(self.module.model, checkpoint_dir)
+                save_training_checkpoint(
+                    self.module.model,
+                    optimizer,
+                    scheduler,
+                    epoch + 1,
+                    global_step,
+                    checkpoint_dir,
+                )
                 yield global_step, avg_epoch_loss, f"💾 Checkpoint saved at epoch {epoch+1}"
         
         # Save final model
@@ -418,6 +516,7 @@ class LoRATrainer:
         target_tensor_dir: str,
         prior_tensor_dir: str,
         training_state: Optional[Dict] = None,
+        resume_from: Optional[str] = None,
     ) -> Generator[Tuple[int, float, str], None, None]:
         """Train with Prior Preservation (DreamBooth style).
 
@@ -474,7 +573,7 @@ class LoRATrainer:
             yield 0, 0.0, f"📂 Loaded {target_count} target + {prior_count} prior samples"
 
             if LIGHTNING_AVAILABLE:
-                yield from self._train_prior_preservation_fabric(data_module, training_state)
+                yield from self._train_prior_preservation_fabric(data_module, training_state, resume_from)
             else:
                 yield 0, 0.0, "❌ Lightning Fabric required"
 
@@ -488,6 +587,7 @@ class LoRATrainer:
         self,
         data_module,
         training_state: Optional[Dict],
+        resume_from: Optional[str] = None,
     ) -> Generator[Tuple[int, float, str], None, None]:
         """Train with prior preservation using Lightning Fabric.
 
@@ -510,6 +610,22 @@ class LoRATrainer:
         self.fabric.launch()
 
         yield 0, 0.0, f"🚀 Prior Preservation training (precision: {precision})..."
+
+        # Parse resume_from - will load full state after optimizer/scheduler setup
+        start_epoch = 0
+        start_global_step = 0
+        checkpoint_info = None
+        if resume_from and os.path.exists(resume_from):
+            checkpoint_info = load_training_checkpoint(resume_from)
+            if checkpoint_info["adapter_path"]:
+                start_epoch = checkpoint_info["epoch"]
+                start_global_step = checkpoint_info["global_step"]
+                yield 0, 0.0, f"📂 Will resume from epoch {start_epoch}, step {start_global_step}"
+            else:
+                yield 0, 0.0, f"⚠️ Checkpoint not found: {resume_from}, starting fresh"
+                checkpoint_info = None
+        elif resume_from:
+            yield 0, 0.0, f"⚠️ Checkpoint path not found: {resume_from}, starting fresh"
 
         # Get both dataloaders
         target_loader = data_module.target_dataloader()
@@ -559,14 +675,64 @@ class LoRATrainer:
         target_loader = self.fabric.setup_dataloaders(target_loader)
         prior_loader = self.fabric.setup_dataloaders(prior_loader)
 
+        # Load checkpoint AFTER Fabric setup
+        if checkpoint_info and checkpoint_info["adapter_path"]:
+            yield 0, 0.0, f"📂 Loading checkpoint weights..."
+            try:
+                checkpoint_info = load_training_checkpoint(
+                    resume_from,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    device=self.module.device,
+                )
+                start_epoch = checkpoint_info["epoch"]
+                start_global_step = checkpoint_info["global_step"]
+
+                adapter_path = checkpoint_info["adapter_path"]
+                adapter_weights_path = os.path.join(adapter_path, "adapter_model.safetensors")
+                if not os.path.exists(adapter_weights_path):
+                    adapter_weights_path = os.path.join(adapter_path, "adapter_model.bin")
+
+                if os.path.exists(adapter_weights_path):
+                    from safetensors.torch import load_file
+                    if adapter_weights_path.endswith(".safetensors"):
+                        state_dict = load_file(adapter_weights_path)
+                    else:
+                        state_dict = torch.load(adapter_weights_path, map_location=self.module.device)
+
+                    decoder = self.module.model.decoder
+                    if hasattr(decoder, '_forward_module'):
+                        decoder = decoder._forward_module
+
+                    decoder.load_state_dict(state_dict, strict=False)
+
+                    status_parts = [f"✅ Loaded checkpoint: epoch {start_epoch}, step {start_global_step}"]
+                    if checkpoint_info["loaded_optimizer"]:
+                        status_parts.append("optimizer ✓")
+                    if checkpoint_info["loaded_scheduler"]:
+                        status_parts.append("scheduler ✓")
+                    yield 0, 0.0, ", ".join(status_parts)
+                else:
+                    yield 0, 0.0, f"⚠️ Adapter weights not found in {adapter_path}"
+                    start_epoch = 0
+                    start_global_step = 0
+                    checkpoint_info = None
+            except Exception as e:
+                logger.exception("Failed to load checkpoint")
+                yield 0, 0.0, f"⚠️ Failed to load checkpoint: {e}, starting fresh"
+                start_epoch = 0
+                start_global_step = 0
+                checkpoint_info = None
+
         # Training loop
-        global_step = 0
+        steps_per_epoch = min(len(target_loader), len(prior_loader))
+        global_step = start_global_step
         accumulation_step = 0
         accumulated_loss = 0.0
 
         self.module.model.decoder.train()
 
-        for epoch in range(self.training_config.max_epochs):
+        for epoch in range(start_epoch, self.training_config.max_epochs):
             epoch_loss = 0.0
             num_batches = 0
             epoch_start_time = time.time()
@@ -636,7 +802,14 @@ class LoRATrainer:
                 ckpt_dir = os.path.join(
                     self.training_config.output_dir, "checkpoints", f"epoch_{epoch+1}"
                 )
-                save_lora_weights(self.module.model, ckpt_dir)
+                save_training_checkpoint(
+                    self.module.model,
+                    optimizer,
+                    scheduler,
+                    epoch + 1,
+                    global_step,
+                    ckpt_dir,
+                )
                 yield global_step, avg_epoch_loss, f"💾 Checkpoint saved at epoch {epoch+1}"
 
         # Save final

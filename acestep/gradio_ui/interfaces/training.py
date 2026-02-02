@@ -564,7 +564,15 @@ def create_training_section(dit_handler, llm_handler, init_params=None) -> dict:
                         placeholder="./lora_output",
                         info="Directory to save trained LoRA weights",
                     )
-                
+
+                with gr.Row():
+                    resume_from = gr.Textbox(
+                        label="Resume From Checkpoint (Optional)",
+                        value="",
+                        placeholder="./lora_output/checkpoints/epoch_5",
+                        info="Path to checkpoint directory to resume training from (e.g., ./lora_output/checkpoints/epoch_5)",
+                    )
+
                 gr.HTML("<hr>")
                 
                 with gr.Row():
@@ -697,6 +705,7 @@ def create_training_section(dit_handler, llm_handler, init_params=None) -> dict:
         "training_shift": training_shift,
         "training_seed": training_seed,
         "lora_output_dir": lora_output_dir,
+        "resume_from": resume_from,
         "start_training_btn": start_training_btn,
         "stop_training_btn": stop_training_btn,
         "training_progress": training_progress,

@@ -489,6 +489,7 @@ def start_training(
     lora_output_dir: str,
     training_state: Dict,
     prior_loss_weight: float = 1.0,
+    resume_from: str = "",
     progress=None,
 ):
     """Start LoRA training from preprocessed tensors.
@@ -568,6 +569,9 @@ def start_training(
         step_list = []
         loss_list = []
 
+        # Process resume_from path
+        resume_path = resume_from.strip() if resume_from else None
+
         # Choose training method based on prior_tensor_dir
         if prior_tensor_dir and os.path.exists(prior_tensor_dir):
             # DreamBooth style: dual DataLoader
@@ -575,12 +579,14 @@ def start_training(
                 target_tensor_dir=tensor_dir,
                 prior_tensor_dir=prior_tensor_dir,
                 training_state=training_state,
+                resume_from=resume_path,
             )
         else:
             # Standard training: single DataLoader
             training_generator = trainer.train_from_preprocessed(
                 tensor_dir=tensor_dir,
                 training_state=training_state,
+                resume_from=resume_path,
             )
 
         # Train with progress updates
