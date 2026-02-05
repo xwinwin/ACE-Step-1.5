@@ -388,6 +388,14 @@ class AceStepHandler:
             # config_path is relative path (e.g., "acestep-v15-turbo"), concatenate to checkpoints directory
             acestep_v15_checkpoint_path = os.path.join(checkpoint_dir, config_path)
             if os.path.exists(acestep_v15_checkpoint_path):
+                # Force CUDA cleanup before loading DiT to reduce fragmentation on model/mode switch
+                if torch.cuda.is_available():
+                    if getattr(self, "model", None) is not None:
+                        del self.model
+                        self.model = None
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+
                 # Determine attention implementation
                 if use_flash_attention and self.is_flash_attention_available():
                     attn_implementation = "flash_attention_2"
