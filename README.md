@@ -139,7 +139,7 @@ source .venv/bin/activate
 ```
 ```bash
 #install pytorch requirements
-pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/rocm6.4
+pip install torch torchaudio torchvision xformers --index-url https://download.pytorch.org/whl/rocm6.4
 ```
 ```bash
 #install requirements without uv
