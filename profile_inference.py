@@ -739,6 +739,8 @@ def _run_single_tier_test(
     offload_dit_override: Optional[bool] = None,
     quantization_override: Optional[str] = "USE_DEFAULT",
     test_variant: str = "default",
+    batch_size_override: Optional[int] = None,
+    use_lm_override: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Run a single tier test with the given configuration.
@@ -755,6 +757,8 @@ def _run_single_tier_test(
         quantization_override: If not "USE_DEFAULT", override quantization setting
                                (None means no quantization, "int8_weight_only" etc.)
         test_variant: Label for this test variant ("default", "no-quant", "no-offload")
+        batch_size_override: If not None, override batch size (used by batch boundary tests)
+        use_lm_override: If not None, force LM on (True) or off (False)
 
     Returns:
         Result dictionary for this test
@@ -762,7 +766,10 @@ def _run_single_tier_test(
     tier = gpu_config.tier
 
     # Determine test configuration
-    use_lm = args.tier_with_lm and gpu_config.init_lm_default and bool(gpu_config.available_lm_models)
+    if use_lm_override is not None:
+        use_lm = use_lm_override and gpu_config.init_lm_default and bool(gpu_config.available_lm_models)
+    else:
+        use_lm = args.tier_with_lm and gpu_config.init_lm_default and bool(gpu_config.available_lm_models)
 
     if offload_override is not None:
         offload = offload_override
@@ -797,7 +804,7 @@ def _run_single_tier_test(
         test_duration = max_dur
         print(f"  Duration clamped to {test_duration}s (tier limit)")
 
-    batch_size = 1  # Always test with batch=1 for safety
+    batch_size = batch_size_override if batch_size_override is not None else 1
 
     print(f"\n  Test config [{test_variant}]: duration={test_duration}s, batch={batch_size}, LM={use_lm}")
     if use_lm:
@@ -940,15 +947,37 @@ def _run_single_tier_test(
         )
         config = GenerationConfig(
             batch_size=batch_size,
-            seeds=[42],
+            seeds=[42 + j for j in range(batch_size)],
             use_random_seed=False,
             audio_format="flac",
         )
 
+        # When testing batch boundaries, temporarily override the GPU tier config's
+        # max_batch limits so that inference.py's clamping doesn't reduce our test
+        # batch size. We restore the original values after the test.
+        _patched_tier_config = False
+        _orig_batch_with_lm = None
+        _orig_batch_without_lm = None
+        if batch_size_override is not None and batch_size_override > 1:
+            from acestep.gpu_config import GPU_TIER_CONFIGS as _tier_configs
+            tier = gpu_config.tier
+            if tier in _tier_configs:
+                _patched_tier_config = True
+                _orig_batch_with_lm = _tier_configs[tier]["max_batch_size_with_lm"]
+                _orig_batch_without_lm = _tier_configs[tier]["max_batch_size_without_lm"]
+                _tier_configs[tier]["max_batch_size_with_lm"] = max(batch_size_override, _orig_batch_with_lm)
+                _tier_configs[tier]["max_batch_size_without_lm"] = max(batch_size_override, _orig_batch_without_lm)
+
         t0 = time.perf_counter()
-        result = generate_music(
-            dit_handler, llm_handler, params, config, save_dir=save_dir
-        )
+        try:
+            result = generate_music(
+                dit_handler, llm_handler, params, config, save_dir=save_dir
+            )
+        finally:
+            # Restore original tier config values
+            if _patched_tier_config:
+                _tier_configs[tier]["max_batch_size_with_lm"] = _orig_batch_with_lm
+                _tier_configs[tier]["max_batch_size_without_lm"] = _orig_batch_without_lm
         wall_time = time.perf_counter() - t0
 
         result_entry["wall_time"] = wall_time
@@ -1030,12 +1059,14 @@ def run_tier_test_mode(args):
                 disk_lm_models.append(item)
 
     boundary_mode = getattr(args, "tier_boundary", False)
+    batch_boundary_mode = getattr(args, "tier_batch_boundary", False)
 
     print(f"\n  Tiers to test: {tiers_to_test}")
     print(f"  LM models on disk: {disk_lm_models}")
     print(f"  Test with LM: {args.tier_with_lm}")
     print(f"  Test duration: {args.tier_duration}s")
     print(f"  Boundary testing: {boundary_mode}")
+    print(f"  Batch boundary testing: {batch_boundary_mode}")
     print(f"  Example: {args.example}")
 
     # Results collector
@@ -1114,11 +1145,51 @@ def run_tier_test_mode(args):
             else:
                 print(f"\n  --- Variant: no-offload — SKIPPED (tier already has offload=False, quant=False) ---")
 
+        if batch_boundary_mode:
+            # ---- Batch boundary tests: escalate batch size until OOM ----
+            BATCH_SIZES_TO_TEST = [1, 2, 4, 8]
+
+            # Test WITHOUT LM
+            print(f"\n  --- Batch boundary: without LM ---")
+            for bs in BATCH_SIZES_TO_TEST:
+                print(f"\n  --- Variant: batch-noLM-{bs} (batch_size={bs}, no LM) ---")
+                result_batch = _run_single_tier_test(
+                    sim_gb, gpu_config, args, example_data,
+                    checkpoint_dir, disk_lm_models,
+                    test_variant=f"batch-noLM-{bs}",
+                    batch_size_override=bs,
+                    use_lm_override=False,
+                )
+                all_results.append(result_batch)
+                if not result_batch["gen_success"]:
+                    print(f"  ⚠️ Batch size {bs} failed without LM — stopping escalation")
+                    break
+
+            # Test WITH LM (if tier supports it)
+            if gpu_config.init_lm_default and bool(gpu_config.available_lm_models):
+                print(f"\n  --- Batch boundary: with LM ---")
+                for bs in BATCH_SIZES_TO_TEST:
+                    print(f"\n  --- Variant: batch-LM-{bs} (batch_size={bs}, with LM) ---")
+                    result_batch_lm = _run_single_tier_test(
+                        sim_gb, gpu_config, args, example_data,
+                        checkpoint_dir, disk_lm_models,
+                        test_variant=f"batch-LM-{bs}",
+                        batch_size_override=bs,
+                        use_lm_override=True,
+                    )
+                    all_results.append(result_batch_lm)
+                    if not result_batch_lm["gen_success"]:
+                        print(f"  ⚠️ Batch size {bs} failed with LM — stopping escalation")
+                        break
+
     # ---- Print summary ----
     _print_tier_test_summary(all_results)
 
     if boundary_mode:
         _print_boundary_summary(all_results)
+
+    if batch_boundary_mode:
+        _print_batch_boundary_summary(all_results)
 
     # Save results
     if args.benchmark_output:
@@ -1316,6 +1387,132 @@ def _print_boundary_summary(results: List[Dict]):
     print("    - Whether LM is enabled (--tier-with-lm)")
     print("    - Generation duration and batch size")
     print("    - Flash attention availability")
+
+
+def _print_batch_boundary_summary(results: List[Dict]):
+    """
+    Print a batch boundary analysis summary showing the maximum safe batch size per tier.
+
+    Analyzes results from batch boundary testing to determine:
+    - Maximum batch size WITHOUT LM for each tier
+    - Maximum batch size WITH LM for each tier
+    """
+    print("\n" + "=" * 120)
+    print("BATCH BOUNDARY ANALYSIS")
+    print("=" * 120)
+    print()
+    print("  This analysis shows the maximum batch size that completed successfully")
+    print("  for each simulated VRAM tier.")
+    print()
+
+    # Collect batch boundary results
+    batch_no_lm = [r for r in results if r.get("test_variant", "").startswith("batch-noLM-")]
+    batch_with_lm = [r for r in results if r.get("test_variant", "").startswith("batch-LM-")]
+
+    # Group by tier_gb
+    def _group_by_tier(result_list):
+        groups = {}
+        for r in result_list:
+            tier_gb = r["tier_gb"]
+            if tier_gb not in groups:
+                groups[tier_gb] = {"tier": r["tier"], "results": []}
+            groups[tier_gb]["results"].append(r)
+        return groups
+
+    no_lm_groups = _group_by_tier(batch_no_lm)
+    with_lm_groups = _group_by_tier(batch_with_lm)
+
+    # Find max passing batch per tier
+    def _max_passing_batch(group_results):
+        max_bs = 0
+        peak_vram = 0.0
+        for r in group_results:
+            if r.get("gen_success"):
+                bs = r.get("batch_size", 1)
+                if bs > max_bs:
+                    max_bs = bs
+                    peak_vram = r.get("peak_vram_gb", 0)
+        return max_bs, peak_vram
+
+    # Collect all tier_gb values
+    all_tier_gbs = sorted(set(list(no_lm_groups.keys()) + list(with_lm_groups.keys())))
+
+    # Print table
+    print(f"  {'VRAM':>6}  {'Tier':<12}  {'Max Batch (no LM)':>18}  {'Peak VRAM':>10}  {'Max Batch (with LM)':>20}  {'Peak VRAM':>10}")
+    print("  " + "-" * 90)
+
+    summary_rows = []
+    for tier_gb in all_tier_gbs:
+        tier_name = no_lm_groups.get(tier_gb, with_lm_groups.get(tier_gb, {})).get("tier", "?")
+
+        no_lm_max, no_lm_peak = (0, 0.0)
+        if tier_gb in no_lm_groups:
+            no_lm_max, no_lm_peak = _max_passing_batch(no_lm_groups[tier_gb]["results"])
+
+        with_lm_max, with_lm_peak = (0, 0.0)
+        if tier_gb in with_lm_groups:
+            with_lm_max, with_lm_peak = _max_passing_batch(with_lm_groups[tier_gb]["results"])
+
+        no_lm_str = str(no_lm_max) if no_lm_max > 0 else "FAIL"
+        with_lm_str = str(with_lm_max) if with_lm_max > 0 else ("N/A" if tier_gb not in with_lm_groups else "FAIL")
+
+        no_lm_peak_str = f"{no_lm_peak:.2f}GB" if no_lm_max > 0 else "-"
+        with_lm_peak_str = f"{with_lm_peak:.2f}GB" if with_lm_max > 0 else "-"
+
+        print(
+            f"  {tier_gb:5d}GB  {tier_name:<12}  {no_lm_str:>18}  {no_lm_peak_str:>10}  "
+            f"{with_lm_str:>20}  {with_lm_peak_str:>10}"
+        )
+
+        summary_rows.append({
+            "tier_gb": tier_gb,
+            "tier": tier_name,
+            "max_batch_no_lm": no_lm_max,
+            "max_batch_with_lm": with_lm_max if tier_gb in with_lm_groups else None,
+        })
+
+    print("  " + "-" * 90)
+    print()
+
+    # Print comparison with current GPU_TIER_CONFIGS
+    print("  Comparison with current GPU_TIER_CONFIGS:")
+    print(f"  {'VRAM':>6}  {'Tier':<12}  {'Config (no LM)':>15}  {'Tested (no LM)':>15}  {'Config (LM)':>12}  {'Tested (LM)':>12}  {'Recommendation':<30}")
+    print("  " + "-" * 110)
+
+    for row in summary_rows:
+        tier_gb = row["tier_gb"]
+        tier_name = row["tier"]
+        cfg = get_gpu_config(gpu_memory_gb=float(tier_gb))
+
+        cfg_no_lm = cfg.max_batch_size_without_lm
+        cfg_with_lm = cfg.max_batch_size_with_lm
+        tested_no_lm = row["max_batch_no_lm"]
+        tested_with_lm = row["max_batch_with_lm"]
+
+        tested_no_lm_str = str(tested_no_lm) if tested_no_lm > 0 else "FAIL"
+        tested_with_lm_str = str(tested_with_lm) if tested_with_lm is not None and tested_with_lm > 0 else ("N/A" if tested_with_lm is None else "FAIL")
+
+        # Recommendation
+        rec_parts = []
+        if tested_no_lm > 0 and tested_no_lm != cfg_no_lm:
+            rec_parts.append(f"no_lm: {cfg_no_lm}→{tested_no_lm}")
+        if tested_with_lm is not None and tested_with_lm > 0 and tested_with_lm != cfg_with_lm:
+            rec_parts.append(f"lm: {cfg_with_lm}→{tested_with_lm}")
+        recommendation = ", ".join(rec_parts) if rec_parts else "OK"
+
+        print(
+            f"  {tier_gb:5d}GB  {tier_name:<12}  {cfg_no_lm:>15}  {tested_no_lm_str:>15}  "
+            f"{cfg_with_lm:>12}  {tested_with_lm_str:>12}  {recommendation:<30}"
+        )
+
+    print("  " + "-" * 110)
+    print()
+    print("  Note: Batch boundary results are empirical and depend on:")
+    print("    - DiT model variant (turbo vs base)")
+    print("    - Generation duration (longer = more VRAM per batch)")
+    print("    - Flash attention availability")
+    print("    - LM model size (0.6B vs 1.7B vs 4B)")
+    print("    - Quantization and offload settings")
 
 
 # =============================================================================
@@ -1857,6 +2054,13 @@ Examples:
         action="store_true",
         help="Enable boundary testing: for each tier, also test without INT8 quantization "
              "and without CPU offload to find the minimum VRAM tier for each capability",
+    )
+    parser.add_argument(
+        "--tier-batch-boundary",
+        action="store_true",
+        help="Enable batch size boundary testing: for each tier, progressively test "
+             "batch sizes 1, 2, 4, 8 (stop at first OOM) to find the maximum safe batch "
+             "size. Tests both with-LM and without-LM configurations.",
     )
 
     # create_sample / understand options

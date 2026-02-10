@@ -11,8 +11,8 @@ ACE-Step 1.5는 GPU의 사용 가능한 VRAM에 자동으로 적응하여 생성
 | 6-8GB | 티어 3 | 0.6B | 0.6B | pt | 8분 / 10분 | 1 / 2 | CPU + DiT | INT8 |
 | 8-12GB | 티어 4 | 0.6B | 0.6B | vllm | 8분 / 10분 | 2 / 4 | CPU + DiT | INT8 |
 | 12-16GB | 티어 5 | 0.6B, 1.7B | 1.7B | vllm | 8분 / 10분 | 2 / 4 | CPU | INT8 |
-| 16-20GB | 티어 6a | 0.6B, 1.7B | 1.7B | vllm | 8분 / 10분 | 1 / 4 | CPU | INT8 |
-| 20-24GB | 티어 6b | 0.6B, 1.7B, 4B | 1.7B | vllm | 8분 / 8분 | 2 / 8 | 없음 | 없음 |
+| 16-20GB | 티어 6a | 0.6B, 1.7B | 1.7B | vllm | 8분 / 10분 | 4 / 8 | CPU | INT8 |
+| 20-24GB | 티어 6b | 0.6B, 1.7B, 4B | 1.7B | vllm | 8분 / 8분 | 4 / 8 | 없음 | 없음 |
 | ≥24GB | 제한 없음 | 전체 (0.6B, 1.7B, 4B) | 4B | vllm | 10분 / 10분 | 8 / 8 | 없음 | 없음 |
 
 ### 열 설명
@@ -137,3 +137,17 @@ python profile_inference.py --mode tier-test --tier-boundary --benchmark-output 
 ```
 
 > **참고:** 경계 테스트 결과는 경험적이며, DiT 모델 변형 (turbo vs base), LM 활성화 여부, 생성 시간, flash attention 가용성에 따라 달라질 수 있습니다.
+
+### 배치 크기 경계 테스트
+
+`--tier-batch-boundary`를 사용하여 배치 크기 1, 2, 4, 8을 단계적으로 테스트하여 각 티어의 최대 안전 배치 크기를 찾습니다:
+
+```bash
+# LM 활성화 상태에서 배치 경계 테스트 실행
+python profile_inference.py --mode tier-test --tier-batch-boundary --tier-with-lm
+
+# 특정 티어 테스트
+python profile_inference.py --mode tier-test --tier-batch-boundary --tier-with-lm --tiers 8 12 16 24
+```
+
+LM 사용/미사용 두 가지 구성을 모두 테스트하고 각 티어의 최대 성공 배치 크기를 보고합니다.

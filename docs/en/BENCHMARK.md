@@ -221,6 +221,20 @@ python profile_inference.py --mode tier-test --tier-boundary --benchmark-output 
 
 The output includes a **Boundary Analysis** summary showing the minimum tier for each capability.
 
+#### Batch Size Boundary Testing
+
+Use `--tier-batch-boundary` to find the maximum safe batch size for each tier. For each tier, the tool progressively tests batch sizes 1, 2, 4, 8 (stopping at first OOM) with both LM-enabled and LM-disabled configurations:
+
+```bash
+# Run batch boundary tests
+python profile_inference.py --mode tier-test --tier-batch-boundary --tier-with-lm
+
+# Test specific tiers
+python profile_inference.py --mode tier-test --tier-batch-boundary --tier-with-lm --tiers 8 12 16 24
+```
+
+The output includes a **Batch Boundary Summary** showing the maximum successful batch size per tier for both with-LM and without-LM configurations.
+
 ---
 
 ## CLI Reference
@@ -288,6 +302,7 @@ The output includes a **Boundary Analysis** summary showing the minimum tier for
 | `--tier-with-lm` | off | Enable LM initialization on tiers that support it |
 | `--tier-skip-compile` | off | Skip `torch.compile` for faster iteration on non-quantized tiers |
 | `--tier-boundary` | off | Test each tier with no-quant and no-offload variants to find minimum capability boundaries |
+| `--tier-batch-boundary` | off | Test each tier with batch sizes 1, 2, 4, 8 to find maximum safe batch size |
 
 ### Input Options
 

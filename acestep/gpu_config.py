@@ -208,12 +208,13 @@ GPU_TIER_CONFIGS = {
         "lm_memory_gb": {"0.6B": 3, "1.7B": 8},
     },
     "tier6a": {  # 16-20GB (e.g., RTX 4060 Ti 16GB, RTX 3080 16GB)
-        # On 16GB GPUs: DiT(4.46) + VAE(0.32) + TextEnc(1.2) + CUDA(0.5) = ~6.5GB base
-        # Remaining ~9.5GB covers LM + KV cache + inference activations.
+        # On 16GB GPUs: DiT(INT8, ~2.4GB) + LM 1.7B(~7.6GB peak with offload) = ~10GB peak
+        # Empirical batch tests (60s, turbo): noLM-4→13.3GB, LM-2→11.9GB, LM-4→~13.5GB
+        # With CPU offload, LM is offloaded after inference → DiT batch has full 16GB budget.
         "max_duration_with_lm": 480,  # 8 minutes
         "max_duration_without_lm": 600,  # 10 minutes (max supported)
-        "max_batch_size_with_lm": 1,
-        "max_batch_size_without_lm": 4,
+        "max_batch_size_with_lm": 4,
+        "max_batch_size_without_lm": 8,
         "init_lm_default": True,
         "available_lm_models": ["acestep-5Hz-lm-0.6B", "acestep-5Hz-lm-1.7B"],
         "recommended_lm_model": "acestep-5Hz-lm-1.7B",
@@ -226,9 +227,11 @@ GPU_TIER_CONFIGS = {
         "lm_memory_gb": {"0.6B": 3, "1.7B": 8},
     },
     "tier6b": {  # 20-24GB (e.g., RTX 3090, RTX 4090)
+        # 20-24GB: no offload, no quantization. DiT(bf16, ~4.7GB) + LM 1.7B(~3.4GB) = ~8.1GB
+        # Remaining ~12-16GB easily fits batch=4 with LM, batch=8 without LM.
         "max_duration_with_lm": 480,  # 8 minutes
         "max_duration_without_lm": 480,  # 8 minutes
-        "max_batch_size_with_lm": 2,
+        "max_batch_size_with_lm": 4,
         "max_batch_size_without_lm": 8,
         "init_lm_default": True,
         "available_lm_models": ["acestep-5Hz-lm-0.6B", "acestep-5Hz-lm-1.7B", "acestep-5Hz-lm-4B"],

@@ -11,8 +11,8 @@ ACE-Step 1.5 会自动适配您的 GPU 显存大小，相应调整生成时长�
 | 6-8GB | Tier 3 | 0.6B | 0.6B | pt | 8分 / 10分 | 1 / 2 | CPU + DiT | INT8 |
 | 8-12GB | Tier 4 | 0.6B | 0.6B | vllm | 8分 / 10分 | 2 / 4 | CPU + DiT | INT8 |
 | 12-16GB | Tier 5 | 0.6B, 1.7B | 1.7B | vllm | 8分 / 10分 | 2 / 4 | CPU | INT8 |
-| 16-20GB | Tier 6a | 0.6B, 1.7B | 1.7B | vllm | 8分 / 10分 | 1 / 4 | CPU | INT8 |
-| 20-24GB | Tier 6b | 0.6B, 1.7B, 4B | 1.7B | vllm | 8分 / 8分 | 2 / 8 | 无 | 无 |
+| 16-20GB | Tier 6a | 0.6B, 1.7B | 1.7B | vllm | 8分 / 10分 | 4 / 8 | CPU | INT8 |
+| 20-24GB | Tier 6b | 0.6B, 1.7B, 4B | 1.7B | vllm | 8分 / 8分 | 4 / 8 | 无 | 无 |
 | ≥24GB | 无限制 | 全部 (0.6B, 1.7B, 4B) | 4B | vllm | 10分 / 10分 | 8 / 8 | 无 | 无 |
 
 ### 列说明
@@ -149,3 +149,17 @@ BOUNDARY ANALYSIS
 ```
 
 > **注意：** 边界测试结果是经验性的，可能因 DiT 模型变体（turbo vs base）、是否启用 LM、生成时长和 flash attention 可用性而有所不同。欢迎社区贡献来完善这些边界值！
+
+### 批次大小边界测试
+
+使用 `--tier-batch-boundary` 通过递进测试批次大小 1、2、4、8 来查找每个等级的最大安全批次大小：
+
+```bash
+# 运行启用 LM 的批次边界测试
+python profile_inference.py --mode tier-test --tier-batch-boundary --tier-with-lm
+
+# 测试特定等级
+python profile_inference.py --mode tier-test --tier-batch-boundary --tier-with-lm --tiers 8 12 16 24
+```
+
+该测试同时测试有 LM 和无 LM 的配置，并报告每个等级的最大成功批次大小。

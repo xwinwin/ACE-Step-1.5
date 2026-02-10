@@ -221,6 +221,20 @@ python profile_inference.py --mode tier-test --tier-boundary --benchmark-output 
 
 输出包含一个 **边界分析** 摘要，显示每种能力的最低等级。
 
+#### 批次大小边界测试
+
+使用 `--tier-batch-boundary` 查找每个等级的最大安全批次大小。对每个等级，工具会递进测试批次大小 1、2、4、8（在首次 OOM 时停止），同时测试启用 LM 和未启用 LM 的配置：
+
+```bash
+# 运行批次边界测试
+python profile_inference.py --mode tier-test --tier-batch-boundary --tier-with-lm
+
+# 测试特定等级
+python profile_inference.py --mode tier-test --tier-batch-boundary --tier-with-lm --tiers 8 12 16 24
+```
+
+输出包含一个 **批次边界摘要**，显示每个等级在有 LM 和无 LM 配置下的最大成功批次大小。
+
 ---
 
 ## 命令行参数
@@ -288,6 +302,7 @@ python profile_inference.py --mode tier-test --tier-boundary --benchmark-output 
 | `--tier-with-lm` | 关闭 | 在支持的等级上启用 LM 初始化 |
 | `--tier-skip-compile` | 关闭 | 非量化等级跳过 `torch.compile` 以加速迭代 |
 | `--tier-boundary` | 关闭 | 对每个等级测试 no-quant 和 no-offload 变体，查找最低能力边界 |
+| `--tier-batch-boundary` | 关闭 | 对每个等级测试批次大小 1、2、4、8，查找最大安全批次大小 |
 
 ### 输入选项
 

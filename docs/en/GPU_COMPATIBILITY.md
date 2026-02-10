@@ -11,8 +11,8 @@ ACE-Step 1.5 automatically adapts to your GPU's available VRAM, adjusting genera
 | 6-8GB | Tier 3 | 0.6B | 0.6B | pt | 8 min / 10 min | 1 / 2 | CPU + DiT | INT8 |
 | 8-12GB | Tier 4 | 0.6B | 0.6B | vllm | 8 min / 10 min | 2 / 4 | CPU + DiT | INT8 |
 | 12-16GB | Tier 5 | 0.6B, 1.7B | 1.7B | vllm | 8 min / 10 min | 2 / 4 | CPU | INT8 |
-| 16-20GB | Tier 6a | 0.6B, 1.7B | 1.7B | vllm | 8 min / 10 min | 1 / 4 | CPU | INT8 |
-| 20-24GB | Tier 6b | 0.6B, 1.7B, 4B | 1.7B | vllm | 8 min / 8 min | 2 / 8 | None | None |
+| 16-20GB | Tier 6a | 0.6B, 1.7B | 1.7B | vllm | 8 min / 10 min | 4 / 8 | CPU | INT8 |
+| 20-24GB | Tier 6b | 0.6B, 1.7B, 4B | 1.7B | vllm | 8 min / 8 min | 4 / 8 | None | None |
 | ≥24GB | Unlimited | All (0.6B, 1.7B, 4B) | 4B | vllm | 10 min / 10 min | 8 / 8 | None | None |
 
 ### Column Descriptions
@@ -149,3 +149,17 @@ BOUNDARY ANALYSIS
 ```
 
 > **Note:** Boundary results are empirical and may vary based on DiT model variant (turbo vs base), whether LM is enabled, generation duration, and flash attention availability. Community contributions to refine these boundaries are welcome!
+
+### Batch Size Boundary Testing
+
+Use `--tier-batch-boundary` to find the maximum safe batch size for each tier by progressively testing batch sizes 1, 2, 4, 8:
+
+```bash
+# Run batch boundary tests with LM enabled
+python profile_inference.py --mode tier-test --tier-batch-boundary --tier-with-lm
+
+# Test specific tiers
+python profile_inference.py --mode tier-test --tier-batch-boundary --tier-with-lm --tiers 8 12 16 24
+```
+
+This tests both with-LM and without-LM configurations and reports the maximum successful batch size per tier.
