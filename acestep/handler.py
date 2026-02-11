@@ -2725,6 +2725,13 @@ class AceStepHandler(LoraManagerMixin, ProgressMixin):
         # Get batch size from captions
         batch_size = len(captions)
 
+        # Normalize lyrics to match batch size (so conditioning always has caption + lyric per item, including repaint)
+        if len(lyrics) < batch_size:
+            fill = lyrics[-1] if lyrics else ""
+            lyrics = list(lyrics) + [fill] * (batch_size - len(lyrics))
+        elif len(lyrics) > batch_size:
+            lyrics = lyrics[:batch_size]
+
         # Normalize instructions and audio_code_hints to match batch size
         instructions = self._normalize_instructions(instructions, batch_size, DEFAULT_DIT_INSTRUCTION) if instructions is not None else None
         audio_code_hints = self._normalize_audio_code_hints(audio_code_hints, batch_size) if audio_code_hints is not None else None

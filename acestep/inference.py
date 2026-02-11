@@ -568,6 +568,11 @@ def generate_music(
             if params.use_cot_language:
                 dit_input_vocal_language = lm_generated_metadata.get("vocal_language", dit_input_vocal_language)
 
+        # Repaint/cover: no LM run, so conditioning must come from params (caption + lyrics from GUI).
+        if params.task_type in ("repaint", "cover"):
+            dit_input_caption = params.caption or dit_input_caption
+            dit_input_lyrics = params.lyrics if params.lyrics is not None else dit_input_lyrics
+
         # Phase 2: DiT music generation
         # Use seed_for_generation (from config.seed or params.seed) instead of params.seed for actual generation
         result = dit_handler.generate_music(
