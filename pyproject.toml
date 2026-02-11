@@ -48,6 +48,7 @@ dependencies = [
     "nano-vllm; sys_platform != 'darwin' or platform_machine != 'arm64'",
     "modelscope",
     "tensorboard>=2.20.0",
+    "typer-slim>=0.21.1",
 ]
 
 [[tool.uv.index]]
