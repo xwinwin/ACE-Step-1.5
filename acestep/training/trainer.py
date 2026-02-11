@@ -148,7 +148,11 @@ class PreprocessedLoRAModule(nn.Module):
         # Store training losses
         self.training_losses = []
     
-    def training_step(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def training_step(
+        self,
+        batch: Dict[str, torch.Tensor],
+        record_loss: bool = True,
+    ) -> torch.Tensor:
         """Single training step using preprocessed tensors.
         
         Note: This is a distilled turbo model, NO CFG is used.
@@ -160,6 +164,7 @@ class PreprocessedLoRAModule(nn.Module):
                 - encoder_hidden_states: [B, L, D] - Condition encoder output
                 - encoder_attention_mask: [B, L] - Condition mask
                 - context_latents: [B, T, 128] - Source context
+            record_loss: If True, append loss to training_losses (set False for validation).
             
         Returns:
             Loss tensor (float32 for stable backward)
@@ -218,7 +223,8 @@ class PreprocessedLoRAModule(nn.Module):
         # Convert loss to float32 for stable backward pass
         diffusion_loss = diffusion_loss.float()
         
-        self.training_losses.append(diffusion_loss.item())
+        if record_loss:
+            self.training_losses.append(diffusion_loss.item())
         
         return diffusion_loss
 
@@ -611,23 +617,25 @@ class LoRATrainer:
             yield global_step, avg_epoch_loss, f"✅ Epoch {epoch+1}/{self.training_config.max_epochs} in {epoch_time:.1f}s, Loss: {avg_epoch_loss:.4f}"
 
             # Validation and best checkpoint (if validation set exists)
-            if val_loader is not None and training_state is not None:
+            if val_loader is not None:
                 self.module.model.decoder.eval()
                 total_val_loss = 0.0
                 n_val = 0
                 with torch.no_grad():
                     for val_batch in val_loader:
-                        v_loss = self.module.training_step(val_batch)
+                        v_loss = self.module.training_step(val_batch, record_loss=False)
                         total_val_loss += v_loss.item()
                         n_val += 1
                 self.module.model.decoder.train()
                 val_loss = total_val_loss / max(n_val, 1)
-                training_state["plot_val_steps"].append(global_step)
-                training_state["plot_val_loss"].append(val_loss)
+                if training_state is not None:
+                    training_state["plot_val_steps"].append(global_step)
+                    training_state["plot_val_loss"].append(val_loss)
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     best_val_step = global_step
-                    training_state["plot_best_step"] = best_val_step
+                    if training_state is not None:
+                        training_state["plot_best_step"] = best_val_step
                     best_dir = os.path.join(self.training_config.output_dir, "checkpoints", "best")
                     save_training_checkpoint(
                         self.module.model,

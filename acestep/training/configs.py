@@ -91,6 +91,10 @@ class TrainingConfig:
     # Validation (for loss curve and best-checkpoint tracking)
     val_split: float = 0.0
 
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.val_split < 1.0:
+            raise ValueError("val_split must be in [0.0, 1.0).")
+
     def to_dict(self):
         """Convert to dictionary."""
         return {
