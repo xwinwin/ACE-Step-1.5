@@ -116,6 +116,10 @@ class AceStepHandler(LoraManagerMixin, ProgressMixin):
         self.mlx_decoder = None
         self.use_mlx_dit = False
 
+        # MLX VAE acceleration (macOS Apple Silicon only)
+        self.mlx_vae = None
+        self.use_mlx_vae = False
+
     # ------------------------------------------------------------------
     # MLX DiT acceleration helpers
     # ------------------------------------------------------------------
@@ -144,6 +148,330 @@ class AceStepHandler(LoraManagerMixin, ProgressMixin):
             self.mlx_decoder = None
             self.use_mlx_dit = False
             return False
+
+    # ------------------------------------------------------------------
+    # MLX VAE acceleration helpers
+    # ------------------------------------------------------------------
+    def _init_mlx_vae(self) -> bool:
+        """Try to initialize the native MLX VAE for Apple Silicon.
+
+        Converts the PyTorch ``AutoencoderOobleck`` weights into a pure-MLX
+        re-implementation.  The PyTorch VAE is kept as a fallback.
+
+        Performance optimizations applied:
+        - Float16 inference: ~2x throughput from doubled memory bandwidth
+          on Apple Silicon.  Snake1d uses mixed precision internally.
+          Set ACESTEP_MLX_VAE_FP16=1 to enable float16 inference.
+        - mx.compile(): kernel fusion reduces Metal dispatch overhead and
+          improves data locality (used by mlx-lm, vllm-mlx, mlx-audio).
+
+        Returns True on success, False on failure (non-fatal).
+        """
+        try:
+            from acestep.mlx_vae import mlx_available
+            if not mlx_available():
+                logger.info("[MLX-VAE] MLX not available on this platform; skipping.")
+                return False
+
+            import os
+            import mlx.core as mx
+            from mlx.utils import tree_map
+            from acestep.mlx_vae.model import MLXAutoEncoderOobleck
+            from acestep.mlx_vae.convert import convert_and_load
+
+            mlx_vae = MLXAutoEncoderOobleck.from_pytorch_config(self.vae)
+            convert_and_load(self.vae, mlx_vae)
+
+            # --- Float16 conversion for faster inference ---
+            # NOTE: Float16 causes audible quality degradation in the Oobleck
+            # VAE decoder (the Snake activation and ConvTranspose1d chain
+            # amplify rounding errors).  Default to float32 for quality.
+            # Set ACESTEP_MLX_VAE_FP16=1 to enable float16 inference.
+            use_fp16 = os.environ.get("ACESTEP_MLX_VAE_FP16", "0").lower() in (
+                "1", "true", "yes",
+            )
+            vae_dtype = mx.float16 if use_fp16 else mx.float32
+
+            if use_fp16:
+                try:
+                    def _to_fp16(x):
+                        if isinstance(x, mx.array) and mx.issubdtype(x.dtype, mx.floating):
+                            return x.astype(mx.float16)
+                        return x
+                    mlx_vae.update(tree_map(_to_fp16, mlx_vae.parameters()))
+                    mx.eval(mlx_vae.parameters())
+                    logger.info("[MLX-VAE] Model weights converted to float16.")
+                except Exception as e:
+                    logger.warning(f"[MLX-VAE] Float16 conversion failed ({e}); using float32.")
+                    vae_dtype = mx.float32
+
+            # --- Compile decode / encode for kernel fusion ---
+            try:
+                self._mlx_compiled_decode = mx.compile(mlx_vae.decode)
+                self._mlx_compiled_encode_sample = mx.compile(mlx_vae.encode_and_sample)
+                logger.info("[MLX-VAE] Decode/encode compiled with mx.compile().")
+            except Exception as e:
+                logger.warning(f"[MLX-VAE] mx.compile() failed ({e}); using uncompiled path.")
+                self._mlx_compiled_decode = mlx_vae.decode
+                self._mlx_compiled_encode_sample = mlx_vae.encode_and_sample
+
+            self.mlx_vae = mlx_vae
+            self.use_mlx_vae = True
+            self._mlx_vae_dtype = vae_dtype
+            logger.info(
+                f"[MLX-VAE] Native MLX VAE initialized "
+                f"(dtype={vae_dtype}, compiled=True)."
+            )
+            return True
+        except Exception as exc:
+            logger.warning(f"[MLX-VAE] Failed to initialize MLX VAE (non-fatal): {exc}")
+            self.mlx_vae = None
+            self.use_mlx_vae = False
+            return False
+
+    def _mlx_vae_decode(self, latents_torch):
+        """Decode latents using native MLX VAE.
+
+        Args:
+            latents_torch: PyTorch tensor [B, C, T] (NCL format).
+
+        Returns:
+            PyTorch tensor [B, C_audio, T_audio] (NCL format).
+        """
+        import numpy as np
+        import mlx.core as mx
+        import time as _time
+
+        t_start = _time.time()
+
+        latents_np = latents_torch.detach().cpu().float().numpy()
+        latents_nlc = np.transpose(latents_np, (0, 2, 1))  # NCL -> NLC
+
+        B = latents_nlc.shape[0]
+        T = latents_nlc.shape[1]
+
+        # Convert to model dtype (float16 for speed, float32 fallback)
+        vae_dtype = getattr(self, '_mlx_vae_dtype', mx.float32)
+        latents_mx = mx.array(latents_nlc).astype(vae_dtype)
+
+        t_convert = _time.time()
+
+        # Use compiled decode (kernel-fused) when available
+        decode_fn = getattr(self, '_mlx_compiled_decode', self.mlx_vae.decode)
+
+        # Process batch items sequentially (peak memory stays constant)
+        audio_parts = []
+        for b in range(B):
+            single = latents_mx[b : b + 1]  # [1, T, C]
+            decoded = self._mlx_decode_single(single, decode_fn=decode_fn)
+            # Cast back to float32 for downstream torch compatibility
+            if decoded.dtype != mx.float32:
+                decoded = decoded.astype(mx.float32)
+            mx.eval(decoded)
+            audio_parts.append(np.array(decoded))
+            mx.clear_cache()  # Free intermediate buffers between samples
+
+        t_decode = _time.time()
+
+        audio_nlc = np.concatenate(audio_parts, axis=0)  # [B, T_audio, C_audio]
+        audio_ncl = np.transpose(audio_nlc, (0, 2, 1))   # NLC -> NCL
+
+        t_elapsed = _time.time() - t_start
+        logger.info(
+            f"[MLX-VAE] Decoded {B} sample(s), {T} latent frames -> "
+            f"audio in {t_elapsed:.2f}s "
+            f"(convert={t_convert - t_start:.3f}s, decode={t_decode - t_convert:.2f}s, "
+            f"dtype={vae_dtype})"
+        )
+
+        return torch.from_numpy(audio_ncl)
+
+    def _mlx_decode_single(self, z_nlc, decode_fn=None):
+        """Decode a single sample with optional tiling for very long sequences.
+
+        Args:
+            z_nlc: MLX array [1, T, C] in NLC format.
+            decode_fn: Compiled or plain decode callable.  Falls back to
+                       ``self._mlx_compiled_decode`` or ``self.mlx_vae.decode``.
+
+        Returns:
+            MLX array [1, T_audio, C_audio] in NLC format.
+        """
+        import mlx.core as mx
+
+        if decode_fn is None:
+            decode_fn = getattr(self, '_mlx_compiled_decode', self.mlx_vae.decode)
+
+        T = z_nlc.shape[1]
+        # MLX unified memory: much larger chunk OK than PyTorch MPS.
+        # 2048 latent frames ≈ 87 seconds of audio — covers nearly all use cases.
+        MLX_CHUNK = 2048
+        MLX_OVERLAP = 64
+
+        if T <= MLX_CHUNK:
+            # No tiling needed — caller handles mx.eval()
+            return decode_fn(z_nlc)
+
+        # Overlap-discard tiling for very long sequences
+        stride = MLX_CHUNK - 2 * MLX_OVERLAP
+        num_steps = math.ceil(T / stride)
+        decoded_parts = []
+        upsample_factor = None
+
+        for i in tqdm(range(num_steps), desc="Decoding audio chunks", disable=self.disable_tqdm):
+            core_start = i * stride
+            core_end = min(core_start + stride, T)
+            win_start = max(0, core_start - MLX_OVERLAP)
+            win_end = min(T, core_end + MLX_OVERLAP)
+
+            chunk = z_nlc[:, win_start:win_end, :]
+            audio_chunk = decode_fn(chunk)
+            mx.eval(audio_chunk)
+
+            if upsample_factor is None:
+                upsample_factor = audio_chunk.shape[1] / chunk.shape[1]
+
+            added_start = core_start - win_start
+            trim_start = int(round(added_start * upsample_factor))
+            added_end = win_end - core_end
+            trim_end = int(round(added_end * upsample_factor))
+
+            audio_len = audio_chunk.shape[1]
+            end_idx = audio_len - trim_end if trim_end > 0 else audio_len
+            decoded_parts.append(audio_chunk[:, trim_start:end_idx, :])
+
+        return mx.concatenate(decoded_parts, axis=1)
+
+    def _mlx_vae_encode_sample(self, audio_torch):
+        """Encode audio and sample latent using native MLX VAE.
+
+        Args:
+            audio_torch: PyTorch tensor [B, C, S] (NCL format).
+
+        Returns:
+            PyTorch tensor [B, C_latent, T_latent] (NCL format).
+        """
+        import numpy as np
+        import mlx.core as mx
+        import time as _time
+
+        audio_np = audio_torch.detach().cpu().float().numpy()
+        audio_nlc = np.transpose(audio_np, (0, 2, 1))  # NCL -> NLC
+
+        B = audio_nlc.shape[0]
+        S = audio_nlc.shape[1]
+
+        # Determine total work units for progress bar
+        MLX_ENCODE_CHUNK = 48000 * 30
+        MLX_ENCODE_OVERLAP = 48000 * 2
+        if S <= MLX_ENCODE_CHUNK:
+            chunks_per_sample = 1
+        else:
+            stride = MLX_ENCODE_CHUNK - 2 * MLX_ENCODE_OVERLAP
+            chunks_per_sample = math.ceil(S / stride)
+        total_work = B * chunks_per_sample
+
+        t_start = _time.time()
+
+        # Convert to model dtype (float16 for speed)
+        vae_dtype = getattr(self, '_mlx_vae_dtype', mx.float32)
+        # Use compiled encode when available
+        encode_fn = getattr(self, '_mlx_compiled_encode_sample', self.mlx_vae.encode_and_sample)
+
+        latent_parts = []
+        pbar = tqdm(
+            total=total_work,
+            desc=f"MLX VAE Encode (native, n={B})",
+            disable=self.disable_tqdm,
+            unit="chunk",
+        )
+        for b in range(B):
+            single = mx.array(audio_nlc[b : b + 1])  # [1, S, C_audio]
+            if single.dtype != vae_dtype:
+                single = single.astype(vae_dtype)
+            latent = self._mlx_encode_single(single, pbar=pbar, encode_fn=encode_fn)
+            # Cast back to float32 for downstream torch compatibility
+            if latent.dtype != mx.float32:
+                latent = latent.astype(mx.float32)
+            mx.eval(latent)
+            latent_parts.append(np.array(latent))
+            mx.clear_cache()
+        pbar.close()
+
+        t_elapsed = _time.time() - t_start
+        logger.info(
+            f"[MLX-VAE] Encoded {B} sample(s), {S} audio frames -> "
+            f"latent in {t_elapsed:.2f}s (dtype={vae_dtype})"
+        )
+
+        latent_nlc = np.concatenate(latent_parts, axis=0)  # [B, T, C_latent]
+        latent_ncl = np.transpose(latent_nlc, (0, 2, 1))   # NLC -> NCL
+        return torch.from_numpy(latent_ncl)
+
+    def _mlx_encode_single(self, audio_nlc, pbar=None, encode_fn=None):
+        """Encode a single audio sample with optional tiling.
+
+        Args:
+            audio_nlc: MLX array [1, S, C_audio] in NLC format.
+            pbar: Optional tqdm progress bar to update.
+            encode_fn: Compiled or plain encode callable.  Falls back to
+                       ``self._mlx_compiled_encode_sample`` or
+                       ``self.mlx_vae.encode_and_sample``.
+
+        Returns:
+            MLX array [1, T_latent, C_latent] in NLC format.
+        """
+        import mlx.core as mx
+
+        if encode_fn is None:
+            encode_fn = getattr(
+                self, '_mlx_compiled_encode_sample', self.mlx_vae.encode_and_sample,
+            )
+
+        S = audio_nlc.shape[1]
+        # ~30 sec at 48 kHz (generous for MLX unified memory)
+        MLX_ENCODE_CHUNK = 48000 * 30
+        MLX_ENCODE_OVERLAP = 48000 * 2
+
+        if S <= MLX_ENCODE_CHUNK:
+            result = encode_fn(audio_nlc)
+            mx.eval(result)
+            if pbar is not None:
+                pbar.update(1)
+            return result
+
+        # Overlap-discard tiling
+        stride = MLX_ENCODE_CHUNK - 2 * MLX_ENCODE_OVERLAP
+        num_steps = math.ceil(S / stride)
+        encoded_parts = []
+        downsample_factor = None
+
+        for i in range(num_steps):
+            core_start = i * stride
+            core_end = min(core_start + stride, S)
+            win_start = max(0, core_start - MLX_ENCODE_OVERLAP)
+            win_end = min(S, core_end + MLX_ENCODE_OVERLAP)
+
+            chunk = audio_nlc[:, win_start:win_end, :]
+            latent_chunk = encode_fn(chunk)
+            mx.eval(latent_chunk)
+
+            if downsample_factor is None:
+                downsample_factor = chunk.shape[1] / latent_chunk.shape[1]
+
+            added_start = core_start - win_start
+            trim_start = int(round(added_start / downsample_factor))
+            added_end = win_end - core_end
+            trim_end = int(round(added_end / downsample_factor))
+
+            latent_len = latent_chunk.shape[1]
+            end_idx = latent_len - trim_end if trim_end > 0 else latent_len
+            encoded_parts.append(latent_chunk[:, trim_start:end_idx, :])
+
+            if pbar is not None:
+                pbar.update(1)
+
+        return mx.concatenate(encoded_parts, axis=1)
 
     def _mlx_run_diffusion(
         self,
@@ -574,6 +902,15 @@ class AceStepHandler(LoraManagerMixin, ProgressMixin):
                 mlx_dit_status = "Disabled by user"
                 self.mlx_decoder = None
                 self.use_mlx_dit = False
+
+            # Try to initialize native MLX VAE for Apple Silicon acceleration
+            mlx_vae_status = "Disabled"
+            if device in ("mps", "cpu") and not compile_model:
+                mlx_vae_ok = self._init_mlx_vae()
+                mlx_vae_status = "Active (native MLX)" if mlx_vae_ok else "Unavailable (PyTorch fallback)"
+            else:
+                self.mlx_vae = None
+                self.use_mlx_vae = False
             
             status_msg = f"✅ Model initialized successfully on {device}\n"
             status_msg += f"Main model: {acestep_v15_checkpoint_path}\n"
@@ -584,7 +921,8 @@ class AceStepHandler(LoraManagerMixin, ProgressMixin):
             status_msg += f"Compiled: {compile_model}\n"
             status_msg += f"Offload to CPU: {self.offload_to_cpu}\n"
             status_msg += f"Offload DiT to CPU: {self.offload_dit_to_cpu}\n"
-            status_msg += f"MLX DiT: {mlx_dit_status}"
+            status_msg += f"MLX DiT: {mlx_dit_status}\n"
+            status_msg += f"MLX VAE: {mlx_vae_status}"
 
             # Persist latest successful init settings for mode switching (e.g. training preset).
             self.last_init_params = {
@@ -2938,6 +3276,18 @@ class AceStepHandler(LoraManagerMixin, ProgressMixin):
             overlap: Overlap size in latent frames
             offload_wav_to_cpu: If True, offload decoded wav audio to CPU immediately to save VRAM
         """
+        # ---- MLX fast path (macOS Apple Silicon) ----
+        if self.use_mlx_vae and self.mlx_vae is not None:
+            try:
+                result = self._mlx_vae_decode(latents)
+                return result
+            except Exception as exc:
+                logger.warning(
+                    f"[tiled_decode] MLX VAE decode failed ({type(exc).__name__}: {exc}), "
+                    f"falling back to PyTorch VAE..."
+                )
+
+        # ---- PyTorch path (CUDA / MPS / CPU) ----
         if chunk_size is None:
             chunk_size = self._get_auto_decode_chunk_size()
         if offload_wav_to_cpu is None:
@@ -3244,6 +3594,26 @@ class AceStepHandler(LoraManagerMixin, ProgressMixin):
         Returns:
             Latents tensor [Batch, Channels, T] (same format as vae.encode output)
         """
+        # ---- MLX fast path (macOS Apple Silicon) ----
+        if self.use_mlx_vae and self.mlx_vae is not None:
+            # Handle 2D input [Channels, Samples]
+            input_was_2d = (audio.dim() == 2)
+            if input_was_2d:
+                audio = audio.unsqueeze(0)
+            try:
+                result = self._mlx_vae_encode_sample(audio)
+                if input_was_2d:
+                    result = result.squeeze(0)
+                return result
+            except Exception as exc:
+                logger.warning(
+                    f"[tiled_encode] MLX VAE encode failed ({type(exc).__name__}: {exc}), "
+                    f"falling back to PyTorch VAE..."
+                )
+                if input_was_2d:
+                    audio = audio.squeeze(0)
+
+        # ---- PyTorch path (CUDA / MPS / CPU) ----
         # Default values for 48kHz audio, adaptive to GPU memory
         if chunk_size is None:
             gpu_memory = get_gpu_memory_gb()
@@ -3689,32 +4059,47 @@ class AceStepHandler(LoraManagerMixin, ProgressMixin):
                     
                     logger.debug(f"[generate_music] Before VAE decode: allocated={self._memory_allocated()/1024**3:.2f}GB, max={self._max_memory_allocated()/1024**3:.2f}GB")
                     
-                    # Check effective free VRAM and auto-enable CPU decode if extremely tight
-                    import os as _os
-                    _vae_cpu = _os.environ.get("ACESTEP_VAE_ON_CPU", "0").lower() in ("1", "true", "yes")
-                    if not _vae_cpu:
-                        # MPS (Apple Silicon) uses unified memory — get_effective_free_vram_gb()
-                        # relies on CUDA and always returns 0 on Mac, which would incorrectly
-                        # force VAE decode onto the CPU.  Skip the auto-CPU logic for MPS.
-                        if self.device == "mps":
-                            logger.info("[generate_music] MPS device: skipping VRAM check (unified memory), keeping VAE on MPS")
-                        else:
-                            _effective_free = get_effective_free_vram_gb()
-                            logger.info(f"[generate_music] Effective free VRAM before VAE decode: {_effective_free:.2f} GB")
-                            # If less than 0.5 GB free, VAE decode on GPU will almost certainly OOM
-                            if _effective_free < 0.5:
-                                logger.warning(f"[generate_music] Only {_effective_free:.2f} GB free VRAM — auto-enabling CPU VAE decode")
-                                _vae_cpu = True
-                    if _vae_cpu:
-                        logger.info("[generate_music] Moving VAE to CPU for decode (ACESTEP_VAE_ON_CPU=1)...")
-                        _vae_device = next(self.vae.parameters()).device
-                        self.vae = self.vae.cpu()
-                        pred_latents_for_decode = pred_latents_for_decode.cpu()
-                        self._empty_cache()
+                    # When native MLX VAE is active, bypass VRAM checks and CPU
+                    # offload entirely — MLX uses unified memory, not PyTorch VRAM.
+                    _using_mlx_vae = self.use_mlx_vae and self.mlx_vae is not None
+                    _vae_cpu = False
+
+                    if not _using_mlx_vae:
+                        # Check effective free VRAM and auto-enable CPU decode if extremely tight
+                        import os as _os
+                        _vae_cpu = _os.environ.get("ACESTEP_VAE_ON_CPU", "0").lower() in ("1", "true", "yes")
+                        if not _vae_cpu:
+                            # MPS (Apple Silicon) uses unified memory — get_effective_free_vram_gb()
+                            # relies on CUDA and always returns 0 on Mac, which would incorrectly
+                            # force VAE decode onto the CPU.  Skip the auto-CPU logic for MPS.
+                            if self.device == "mps":
+                                logger.info("[generate_music] MPS device: skipping VRAM check (unified memory), keeping VAE on MPS")
+                            else:
+                                _effective_free = get_effective_free_vram_gb()
+                                logger.info(f"[generate_music] Effective free VRAM before VAE decode: {_effective_free:.2f} GB")
+                                # If less than 0.5 GB free, VAE decode on GPU will almost certainly OOM
+                                if _effective_free < 0.5:
+                                    logger.warning(f"[generate_music] Only {_effective_free:.2f} GB free VRAM — auto-enabling CPU VAE decode")
+                                    _vae_cpu = True
+                        if _vae_cpu:
+                            logger.info("[generate_music] Moving VAE to CPU for decode (ACESTEP_VAE_ON_CPU=1)...")
+                            _vae_device = next(self.vae.parameters()).device
+                            self.vae = self.vae.cpu()
+                            pred_latents_for_decode = pred_latents_for_decode.cpu()
+                            self._empty_cache()
 
                     if use_tiled_decode:
                         logger.info("[generate_music] Using tiled VAE decode to reduce VRAM usage...")
                         pred_wavs = self.tiled_decode(pred_latents_for_decode)  # [batch, channels, samples]
+                    elif _using_mlx_vae:
+                        # Direct decode via native MLX (no tiling needed)
+                        try:
+                            pred_wavs = self._mlx_vae_decode(pred_latents_for_decode)
+                        except Exception as exc:
+                            logger.warning(f"[generate_music] MLX direct decode failed ({exc}), falling back to PyTorch")
+                            decoder_output = self.vae.decode(pred_latents_for_decode)
+                            pred_wavs = decoder_output.sample
+                            del decoder_output
                     else:
                         decoder_output = self.vae.decode(pred_latents_for_decode)
                         pred_wavs = decoder_output.sample
