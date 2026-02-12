@@ -96,8 +96,16 @@ class InitServiceMixinTests(unittest.TestCase):
     def test_is_flash_attention_available_true_when_cuda_and_module_present(self):
         host = _Host(project_root="K:/fake_root", device="cuda")
         with patch("torch.cuda.is_available", return_value=True):
-            with patch.dict("sys.modules", {"flash_attn": types.SimpleNamespace()}):
-                self.assertTrue(host.is_flash_attention_available())
+            with patch("torch.cuda.get_device_capability", return_value=(8, 0)):
+                with patch.dict("sys.modules", {"flash_attn": types.SimpleNamespace()}):
+                    self.assertTrue(host.is_flash_attention_available())
+
+    def test_is_flash_attention_available_false_when_pre_ampere_gpu(self):
+        host = _Host(project_root="K:/fake_root", device="cuda")
+        with patch("torch.cuda.is_available", return_value=True):
+            with patch("torch.cuda.get_device_capability", return_value=(7, 5)):
+                with patch.dict("sys.modules", {"flash_attn": types.SimpleNamespace()}):
+                    self.assertFalse(host.is_flash_attention_available())
 
     def test_is_flash_attention_available_false_when_module_missing(self):
         host = _Host(project_root="K:/fake_root", device="cuda")
@@ -109,8 +117,9 @@ class InitServiceMixinTests(unittest.TestCase):
             return real_import(name, globals, locals, fromlist, level)
 
         with patch("torch.cuda.is_available", return_value=True):
-            with patch("builtins.__import__", side_effect=fake_import):
-                self.assertFalse(host.is_flash_attention_available())
+            with patch("torch.cuda.get_device_capability", return_value=(8, 0)):
+                with patch("builtins.__import__", side_effect=fake_import):
+                    self.assertFalse(host.is_flash_attention_available())
 
     def test_empty_cache_routes_to_cuda(self):
         host = _Host(project_root="K:/fake_root", device="cuda")

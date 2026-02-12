@@ -58,6 +58,17 @@ class InitServiceMixin:
         else:
             if target_device != "cuda" or not torch.cuda.is_available():
                 return False
+        # FlashAttention requires Ampere (compute capability >= 8.0) or newer
+        try:
+            major, _ = torch.cuda.get_device_capability()
+            if major < 8:
+                logger.info(
+                    f"[is_flash_attention_available] GPU compute capability {major}.x < 8.0 "
+                    f"(pre-Ampere) — FlashAttention not supported, will use SDPA instead."
+                )
+                return False
+        except Exception:
+            return False
         try:
             import flash_attn
             return True
