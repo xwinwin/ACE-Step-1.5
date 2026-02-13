@@ -170,8 +170,8 @@ class AceStepHandler(
             self.use_mlx_dit = True
             self.mlx_dit_compiled = compile_model
             logger.info(
-                "[MLX-DiT] Native MLX DiT decoder initialized successfully "
-                "(mx.compile=%s).", compile_model,
+                f"[MLX-DiT] Native MLX DiT decoder initialized successfully "
+                f"(mx.compile={compile_model})."
             )
             return True
         except Exception as exc:
