@@ -37,14 +37,16 @@ def load_lora(self, lora_path: str) -> str:
         return "❌ PEFT library not installed. Please install with: pip install peft"
 
     try:
-        import copy
-
+        # Memory-efficient state_dict backup instead of deepcopy
         if self._base_decoder is None:
-            self._base_decoder = copy.deepcopy(self.model.decoder)
-            logger.info("Base decoder backed up")
+            # Save only the base model weights as state_dict (CPU to save VRAM)
+            self._base_decoder = {k: v.detach().cpu().clone() for k, v in self.model.decoder.state_dict().items()}
+            logger.info("Base decoder state_dict backed up (CPU)")
         else:
-            self.model.decoder = copy.deepcopy(self._base_decoder)
-            logger.info("Restored base decoder before loading new LoRA")
+            # Restore base decoder from state_dict backup
+            logger.info("Restoring base decoder from state_dict backup")
+            self.model.decoder.load_state_dict(self._base_decoder, strict=False)
+            self.model.decoder = self.model.decoder.to(self.device).to(self.dtype)
 
         logger.info(f"Loading LoRA adapter from {lora_path}")
         self.model.decoder = PeftModel.from_pretrained(self.model.decoder, lora_path, is_trainable=False)
@@ -81,9 +83,21 @@ def unload_lora(self) -> str:
         return "❌ Base decoder backup not found. Cannot restore."
 
     try:
-        import copy
-
-        self.model.decoder = copy.deepcopy(self._base_decoder)
+        # Get the base model from the PEFT wrapper if it exists
+        # This is more memory-efficient than recreating from state_dict
+        from peft import PeftModel
+        
+        if isinstance(self.model.decoder, PeftModel):
+            logger.info("Extracting base model from PEFT wrapper")
+            # PEFT's get_base_model() returns the underlying base model without copying
+            self.model.decoder = self.model.decoder.get_base_model()
+            # Restore state_dict from backup to ensure clean state
+            self.model.decoder.load_state_dict(self._base_decoder, strict=False)
+        else:
+            # Fallback: restore from state_dict backup
+            logger.info("Restoring base decoder from state_dict backup")
+            self.model.decoder.load_state_dict(self._base_decoder, strict=False)
+        
         self.model.decoder = self.model.decoder.to(self.device).to(self.dtype)
         self.model.decoder.eval()
 

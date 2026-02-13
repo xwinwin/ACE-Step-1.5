@@ -112,7 +112,7 @@ class AceStepHandler(DiffusionMixin, InitServiceMixin, LoraManagerMixin, Progres
         self.lora_loaded = False
         self.use_lora = False
         self.lora_scale = 1.0  # LoRA influence scale (0-1)
-        self._base_decoder = None  # Backup of original decoder
+        self._base_decoder = None  # Backup of original decoder state_dict (CPU) for memory efficiency
         self._lora_adapter_registry = {}  # adapter_name -> explicit scaling targets
         self._lora_active_adapter = None
 
