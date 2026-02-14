@@ -540,7 +540,7 @@ ACESTEP_INIT_LLM=false
 | `--server-name` | 127.0.0.1 | Server address (use `0.0.0.0` for network access) |
 | `--share` | false | Create public Gradio link |
 | `--language` | en | UI language: `en`, `zh`, `he`, `ja` |
-| `--batch_size` | 2 | Default batch size for generation (1-8, GPU-limited) |
+| `--batch_size` | auto | Default batch size for generation (1-8). Defaults to `min(2, GPU_max)` if not specified |
 | `--init_service` | false | Auto-initialize models on startup |
 | `--init_llm` | auto | LLM init: `true` / `false` / omit for auto |
 | `--config_path` | auto | DiT model (e.g., `acestep-v15-turbo`) |

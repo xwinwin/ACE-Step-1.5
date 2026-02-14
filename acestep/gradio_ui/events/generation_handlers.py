@@ -582,7 +582,9 @@ def init_service_wrapper(dit_handler, llm_handler, checkpoint, config_path, devi
     )
     
     # Preserve current batch size if provided, otherwise use default of min(2, max_batch)
-    # Convert to int first and validate it's at least 1, then clamp to max
+    # Convert to int first and validate it's at least 1, then clamp to max.
+    # Note: Values exceeding max_batch are intentionally clamped rather than rejected,
+    # allowing users to set a high value that works across different GPU configurations.
     if current_batch_size is not None:
         try:
             batch_value_int = int(current_batch_size)
