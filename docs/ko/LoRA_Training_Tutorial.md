@@ -285,3 +285,24 @@ Tensor 파일 저장 경로를 입력하고 전처리를 시작한 후 완료를
 3. 음악 생성을 시작합니다.
 
 축하합니다! LoRA 학습의 전체 과정을 완료했습니다.
+
+---
+
+## 고급 학습: Side-Step
+
+LoRA 학습을 더 세밀하게 제어하고 싶다면 — 수정된 타임스텝 샘플링, LoKR 어댑터, CLI 기반 워크플로우, VRAM 최적화, 그래디언트 감도 분석 등 — 커뮤니티에서 개발한 **[Side-Step](https://github.com/koda-dernet/Side-Step)** 툴킷이 고급 대안을 제공합니다. 문서는 이 저장소의 `docs/sidestep/` 디렉토리에 포함되어 있습니다.
+
+| 주제 | 설명 |
+|------|------|
+| [Getting Started](../sidestep/Getting%20Started.md) | 설치, 사전 요구사항, 첫 실행 설정 |
+| [End-to-End Tutorial](../sidestep/End-to-End%20Tutorial.md) | 원본 오디오에서 생성까지 전체 과정 안내 |
+| [Dataset Preparation](../sidestep/Dataset%20Preparation.md) | JSON 스키마, 오디오 형식, 메타데이터 필드, 커스텀 태그 |
+| [Training Guide](../sidestep/Training%20Guide.md) | LoRA vs LoKR, 수정 모드 vs 바닐라 모드, 하이퍼파라미터 가이드 |
+| [Using Your Adapter](../sidestep/Using%20Your%20Adapter.md) | 출력 디렉토리 구조, Gradio에서 로드, LoKR 제한사항 |
+| [VRAM Optimization Guide](../sidestep/VRAM%20Optimization%20Guide.md) | VRAM 최적화 전략 및 GPU 티어별 설정 |
+| [Estimation Guide](../sidestep/Estimation%20Guide.md) | 타겟 학습을 위한 그래디언트 감도 분석 |
+| [Shift and Timestep Sampling](../sidestep/Shift%20and%20Timestep%20Sampling.md) | 학습 타임스텝 작동 원리와 Side-Step의 차이점 |
+| [Preset Management](../sidestep/Preset%20Management.md) | 내장 프리셋, 저장/로드/가져오기/내보내기 |
+| [The Settings Wizard](../sidestep/The%20Settings%20Wizard.md) | 위자드 설정 전체 참조 |
+| [Model Management](../sidestep/Model%20Management.md) | 체크포인트 구조 및 파인튜닝 모델 지원 |
+| [Windows Notes](../sidestep/Windows%20Notes.md) | Windows 전용 설정 및 해결 방법 |
