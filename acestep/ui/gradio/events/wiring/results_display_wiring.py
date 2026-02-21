@@ -68,7 +68,7 @@ _DOWNLOAD_EXISTING_JS = """(current_audio, batch_files) => {
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
-        }, index * 1000); // 300ms interval to avoid browser blocking
+        }, index * 1000); // 1000ms interval per index to avoid browser blocking
     });
 }
 """

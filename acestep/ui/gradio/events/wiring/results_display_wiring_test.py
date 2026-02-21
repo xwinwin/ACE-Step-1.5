@@ -4,6 +4,11 @@ import ast
 from pathlib import Path
 import unittest
 
+try:
+    from .ast_test_utils import load_module_ast, subscript_key
+except ImportError:  # pragma: no cover - supports direct file execution
+    from ast_test_utils import load_module_ast, subscript_key
+
 
 _WIRING_PATH = Path(__file__).with_name("results_display_wiring.py")
 
@@ -46,28 +51,13 @@ _EXPECTED_JS_MARKERS = [
 
 _FORBIDDEN_MOJIBAKE_MARKERS = ["Ã", "ðŸ", "âš", "â"]
 
-
-def _load_module_ast() -> ast.Module:
-    """Parse and return the AST for results display wiring."""
-
-    return ast.parse(_WIRING_PATH.read_text(encoding="utf-8"))
-
-
-def _subscript_key(node: ast.Subscript) -> str | None:
-    """Return constant key value from a simple subscript expression."""
-
-    if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
-        return node.slice.value
-    return None
-
-
 class ResultsDisplayWiringTests(unittest.TestCase):
     """Verify save/download JS and restore/LRC wiring ordering contracts."""
 
     def test_download_js_contains_expected_ascii_messages(self):
         """Download JS should contain expected ASCII diagnostics and no mojibake markers."""
 
-        module = _load_module_ast()
+        module = load_module_ast(_WIRING_PATH)
         js_literal = None
         for node in module.body:
             if isinstance(node, ast.Assign):
@@ -87,7 +77,7 @@ class ResultsDisplayWiringTests(unittest.TestCase):
     def test_restore_outputs_keep_expected_order(self):
         """Restore params click outputs should keep existing generation field ordering."""
 
-        module = _load_module_ast()
+        module = load_module_ast(_WIRING_PATH)
         for node in module.body:
             if not isinstance(node, ast.FunctionDef) or node.name != "register_results_restore_and_lrc_handlers":
                 continue
@@ -102,7 +92,7 @@ class ResultsDisplayWiringTests(unittest.TestCase):
                     keys = []
                     for element in keyword.value.elts:
                         if isinstance(element, ast.Subscript):
-                            key = _subscript_key(element)
+                            key = subscript_key(element)
                             if key is not None:
                                 keys.append(key)
                     if keys == _EXPECTED_RESTORE_OUTPUT_KEYS:
@@ -112,7 +102,7 @@ class ResultsDisplayWiringTests(unittest.TestCase):
     def test_save_and_lrc_handlers_cover_all_8_result_slots(self):
         """Both save-btn and lrc-display loops should iterate over slots 1..8."""
 
-        module = _load_module_ast()
+        module = load_module_ast(_WIRING_PATH)
         range_calls = []
         for node in ast.walk(module):
             if isinstance(node, ast.For) and isinstance(node.iter, ast.Call):

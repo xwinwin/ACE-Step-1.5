@@ -12,6 +12,7 @@ _MODULE_PATHS = [
     Path(__file__).resolve().with_name("training_dataset_builder_wiring.py"),
     Path(__file__).resolve().with_name("training_dataset_preprocess_wiring.py"),
     Path(__file__).resolve().with_name("training_run_wiring.py"),
+    Path(__file__).resolve().with_name("training_lokr_wiring.py"),
 ]
 
 
@@ -44,7 +45,10 @@ class DocstringCoverageTests(unittest.TestCase):
         for module_path in _MODULE_PATHS:
             source = module_path.read_text(encoding="utf-8")
             tree = ast.parse(source)
-            module_name = str(module_path.relative_to(Path.cwd()))
+            try:
+                module_name = str(module_path.relative_to(Path.cwd()))
+            except ValueError:
+                module_name = module_path.name
             if ast.get_docstring(tree) is None:
                 failures.append(f"{module_name}: <module>")
             for symbol in _collect_nodes_missing_docstrings(tree):

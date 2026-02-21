@@ -4,6 +4,11 @@ import ast
 from pathlib import Path
 import unittest
 
+try:
+    from .ast_test_utils import load_module_ast
+except ImportError:  # pragma: no cover - supports direct file execution
+    from ast_test_utils import load_module_ast
+
 
 _WIRING_PATH = Path(__file__).with_name("generation_metadata_file_wiring.py")
 
@@ -47,13 +52,6 @@ _EXPECTED_METADATA_KEYS = [
     "instrumental_checkbox",
 ]
 
-
-def _load_module_ast() -> ast.Module:
-    """Parse and return the AST for generation metadata file wiring."""
-
-    return ast.parse(_WIRING_PATH.read_text(encoding="utf-8"))
-
-
 def _tuple_string_values(node: ast.AST) -> list[str]:
     """Return string literal values from a tuple/list literal node."""
 
@@ -73,7 +71,7 @@ class GenerationMetadataFileWiringTests(unittest.TestCase):
     def test_metadata_output_key_contract_order_is_stable(self):
         """The metadata output key tuple should match the expected UI ordering."""
 
-        module = _load_module_ast()
+        module = load_module_ast(_WIRING_PATH)
         for node in module.body:
             if isinstance(node, ast.Assign):
                 for target in node.targets:
@@ -85,7 +83,7 @@ class GenerationMetadataFileWiringTests(unittest.TestCase):
     def test_build_outputs_appends_format_caption_state_last(self):
         """build outputs helper should append is_format_caption_state at the tail."""
 
-        module = _load_module_ast()
+        module = load_module_ast(_WIRING_PATH)
         for node in module.body:
             if not isinstance(node, ast.FunctionDef) or node.name != "_build_load_metadata_outputs":
                 continue
@@ -101,7 +99,7 @@ class GenerationMetadataFileWiringTests(unittest.TestCase):
     def test_register_function_references_expected_generation_handlers(self):
         """Register helper should reference load-metadata and auto-uncheck handlers."""
 
-        module = _load_module_ast()
+        module = load_module_ast(_WIRING_PATH)
         attrs = []
         for node in ast.walk(module):
             if isinstance(node, ast.Attribute):

@@ -32,6 +32,8 @@ _SETTINGS_TRIGGER_KEYS = (
     "genre_ratio",
 )
 
+_CHECKMARK = "\u2705"
+
 
 def _build_sample_preview_outputs(training_section: Mapping[str, Any]) -> list[Any]:
     """Return ordered sample-preview outputs shared by preview refresh handlers."""
@@ -91,7 +93,7 @@ def register_training_dataset_builder_handlers(context: TrainingWiringContext) -
         ],
         outputs=sample_preview_outputs,
     ).then(
-        fn=lambda status: f"{status or '\u2705 Auto-label complete.'}\n\u2705 Preview refreshed.",
+        fn=lambda status: f"{status or (_CHECKMARK + ' Auto-label complete.')}\n{_CHECKMARK} Preview refreshed.",
         inputs=[training_section["label_progress"]],
         outputs=[training_section["label_progress"]],
     ).then(
